@@ -7,14 +7,14 @@ echo "Submitting individual ADAPT-VQE jobs..."
 
 # Define the same parameter combinations from execution.sh
 declare -a JOB_PARAMS=(
-    "lih_fer.bin lih 12 4 uccsd"
-    "beh2_fer.bin beh2 14 4 uccsd"
+    "lih_fer.bin lih 12 4 uccsd 2048"
+    "beh2_fer.bin beh2 14 4 uccsd 8192"
 )
 
 # Submit each job individually
 for i in "${!JOB_PARAMS[@]}"; do
     # Parse parameters
-    read -r mol_file mol n_qubits n_electrons pool_type <<< "${JOB_PARAMS[$i]}"
+    read -r mol_file mol n_qubits n_electrons pool_type shots <<< "${JOB_PARAMS[$i]}"
 
     echo "Submitting job $((i+1))/6: $mol with $pool_type pool"
 
@@ -25,9 +25,9 @@ for i in "${!JOB_PARAMS[@]}"; do
 #SBATCH --nodes=1
 #SBATCH --ntasks=40
 #SBATCH --time=23:30:00
-#SBATCH --job-name=adapt_${mol}_${pool_type}
-#SBATCH --output=adapt_${mol}_${pool_type}_%j.out
-#SBATCH --error=adapt_${mol}_${pool_type}_%j.err
+#SBATCH --job-name=adapt_${mol}_${pool_type}_${shots}
+#SBATCH --output=adapt_${mol}_${pool_type}_${shots}_%j.out
+#SBATCH --error=adapt_${mol}_${pool_type}_${shots}_%j.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=ricky.huang@mail.utoronto.ca
 
@@ -48,7 +48,7 @@ export MKL_NUM_THREADS=4
 echo "SLURM job started at \$(date)"
 echo "Job ID: \$SLURM_JOB_ID"
 echo "Node: \$SLURM_NODELIST"
-echo "Running $mol with parameters: $mol_file $n_qubits $n_electrons $pool_type"
+echo "Running $mol with parameters: $mol_file $n_qubits $n_electrons $pool_type $shots"
 
 echo "Testing environment..."
 which python
@@ -70,7 +70,7 @@ echo "Starting ADAPT-VQE qubitwise optimization for $mol..."
 echo "Working directory: \$(pwd)"
 
 # Run the ADAPT-VQE script
-python -u adapt_vqe_qiskit_qubitwise_bai.py "$mol_file" "$mol" "$n_qubits" "$n_electrons" "$pool_type" 2>&1 | tee -a "\$LOG_FILE"
+python -u adapt_vqe_exact_bai.py "$mol_file" "$mol" "$n_qubits" "$n_electrons" "$pool_type" "$shots" 2>&1 | tee -a "\$LOG_FILE"
 
 # Check exit status
 if [ \$? -eq 0 ]; then

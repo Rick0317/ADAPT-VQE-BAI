@@ -18,9 +18,6 @@ import sys
 import numpy as np
 from get_generator_pool import get_generator_pool
 from datetime import datetime
-from scipy.sparse import csr_matrix, eye
-from scipy.sparse.linalg import expm_multiply
-from qiskit.quantum_info import Statevector
 
 
 def _compute_single_gradient_bai(args):
@@ -40,13 +37,20 @@ def _compute_single_gradient_bai(args):
         return arm_index, 0.0
 
 
-def compute_exact_commutator_gradient_fast(current_circuit, H_qubit_op, generator_op, fragment_indices, n_qubits, shots_per_fragment=1024):
+def compute_exact_commutator_gradient(current_circuit, H_qubit_op, generator_op, fragment_indices, n_qubits, shots_per_fragment=1024):
     """
-    Ultra-fast computation of energy gradient using sparse matrix operations and optimized Pauli calculations
+    Compute the energy gradient of the generator by sampling individual fragments
+    :param current_circuit: Current ansatz circuit
+    :param H_qubit_op: Hamiltonian in qubit operator form
+    :param generator_op: Generator operator
+    :param fragment_indices: The QWC fragments indices of the decomposed [H, G]
+    :param n_qubits: Number of qubits
+    :param shots_per_fragment: Number of shots to use for each fragment measurement
+    :return: estimated_gradient, variance_estimate
     """
-    # Get the current statevector as numpy array for faster operations
+
+    # Get the current statevector
     current_statevector = get_statevector(current_circuit)
-    state_vector = current_statevector.data  # Convert to numpy array
 
     epsilons = [0.001, 0.01, 0.1]
 
@@ -59,32 +63,39 @@ def compute_exact_commutator_gradient_fast(current_circuit, H_qubit_op, generato
 
     fragment_expectations = []
     fragment_variances = []
+
     gradient_variance = 0
+    N_est = []
 
     for i, group in enumerate(pauli_groups):
         group_op = openfermion_qubitop_to_sparsepauliop(group, n_qubits)
 
-        # Vectorized computation for all Pauli strings in this group
-        pauli_strings, coeffs = zip(*group_op.to_list())
-        coeffs = np.array(coeffs)
+        # Calculate exact fragment expectation and variance
+        fragment_exact_expectation = 0.0
+        fragment_exact_variance = 0.0
 
-        # Compute expectations for all Pauli strings in this group at once
-        expectations = np.zeros(len(pauli_strings))
+        for pauli_string, coeff in group_op.to_list():
+            # Create the Pauli operator
+            pauli_op = SparsePauliOp.from_list([(pauli_string, 1.0)])
 
-        for j, (pauli_string, coeff) in enumerate(zip(pauli_strings, coeffs)):
-            # Use optimized Pauli expectation calculation
-            expectation = compute_pauli_expectation_fast(state_vector, pauli_string, n_qubits)
-            expectations[j] = expectation
+            # Calculate exact expectation value
+            exact_expectation = current_statevector.expectation_value(pauli_op)
 
-        # Vectorized fragment computation
-        fragment_exact_expectation = np.sum(coeffs * expectations)
-        fragment_exact_variance = np.sum((coeffs**2) * (1.0 - expectations**2))
+            # Add to fragment expectation
+            fragment_exact_expectation += coeff * exact_expectation
 
-        # Sample from normal distribution
+            # Add to fragment variance (variance of Pauli measurement is 1 - expectation^2)
+            pauli_variance = 1.0 - exact_expectation**2
+            fragment_exact_variance += (coeff**2) * pauli_variance
+
+            # Clean up Pauli operator
+            del pauli_op
+
+        # Sample from normal distribution with exact expectation as mean and sqrt(variance) as std
         fragment_samples = np.random.normal(
             fragment_exact_expectation,
             np.sqrt(fragment_exact_variance),
-            shots_per_fragment
+            int(np.ceil(fragment_exact_variance / (0.001 ** 2)))
         )
 
         gradient_variance += fragment_exact_variance
@@ -96,14 +107,17 @@ def compute_exact_commutator_gradient_fast(current_circuit, H_qubit_op, generato
         fragment_expectations.append(fragment_mean)
         fragment_variances.append(fragment_variance)
 
-        # Clean up
-        del fragment_samples
+        # Clean up group operator and samples
+        del group_op, fragment_samples
 
-    # Vectorized N_est calculation
-    N_est = [gradient_variance / epsilon**2 for epsilon in epsilons]
+    for epsilon in epsilons:
+        N_est.append(gradient_variance / epsilon ** 2)
 
-    # Estimate total gradient and variance
+
+    # Estimate total gradient as sum of fragment expectations
     estimated_gradient = sum(fragment_expectations)
+
+    # Estimate total variance as sum of fragment variances
     estimated_variance = sum(fragment_variances)
 
     # Debug: print some information about the computation
@@ -115,30 +129,6 @@ def compute_exact_commutator_gradient_fast(current_circuit, H_qubit_op, generato
     del current_statevector, commutator_qubit, pauli_groups, fragment_expectations, fragment_variances
 
     return estimated_gradient, estimated_variance, N_est
-
-def compute_pauli_expectation_fast(state_vector, pauli_string, n_qubits):
-    """
-    Fast Pauli expectation calculation using Qiskit's optimized approach
-    """
-    # Use Qiskit's SparsePauliOp for reliable and fast computation
-    pauli_op = SparsePauliOp.from_list([(pauli_string, 1.0)])
-
-    # Convert state vector to Qiskit Statevector for compatibility
-    from qiskit.quantum_info import Statevector
-    qiskit_state = Statevector(state_vector)
-
-    # Compute expectation value using Qiskit's optimized method
-    expectation = qiskit_state.expectation_value(pauli_op)
-
-    return np.real(expectation)
-
-
-
-def compute_exact_commutator_gradient(current_circuit, H_qubit_op, generator_op, fragment_indices, n_qubits, shots_per_fragment=1024):
-    """
-    Wrapper function that uses the fast implementation
-    """
-    return compute_exact_commutator_gradient_fast(current_circuit, H_qubit_op, generator_op, fragment_indices, n_qubits, shots_per_fragment)
 
 
 def _compute_single_exact_gradient_bai(args):
@@ -180,12 +170,12 @@ def bai_find_the_best_arm_exact(current_circuit, H_qubit_op, generator_pool, fra
     pulls = np.zeros(K)
 
     # Get all QWC groups that need to be computed
-    # active_qwc_groups = set(fragment_group_indices_map.values())
+    active_qwc_groups = set(fragment_group_indices_map.values())
     rounds = 0
     total_measurements_across_fragments = 0
     measurements_trend_bai = []
 
-    # print(f"Number of active QWC groups: {len(active_qwc_groups)}")
+    print(f"Number of active QWC groups: {len(active_qwc_groups)}")
 
     # First, compute exact gradients for all arms in parallel
     # These will be used as means for normal distribution sampling
@@ -230,58 +220,8 @@ def bai_find_the_best_arm_exact(current_circuit, H_qubit_op, generator_pool, fra
             # Clean up after each gradient computation
             gc.collect()
 
-    # Now run BAI algorithm using sampling from normal distributions
-    while len(active_arms) > 1 and rounds < max_rounds:
-        rounds += 1
-        print(f"Round {rounds}")
-
-        # Sample from normal distributions using estimated gradients as means
-        for i in active_arms:
-            # Sample from normal distribution with estimated gradient as mean and computed variance
-            mean = estimated_gradients[i]
-            std = np.sqrt(estimated_variances[i])
-            sampled_gradient = np.random.normal(mean, std, shots_per_round)
-
-            # Update running estimates
-            if pulls[i] == 0:
-                estimates[i] = np.mean(sampled_gradient)
-            else:
-                # Update running mean
-                mean_sample = np.mean(sampled_gradient)
-                estimates[i] = (estimates[i] * pulls[i] + mean_sample * shots_per_round) / (pulls[i] + shots_per_round)
-
-            pulls[i] += shots_per_round
-
-        total_measurements_across_fragments += len(active_arms) * shots_per_round
-        measurements_trend_bai.append(total_measurements_across_fragments)
-
-        # Use sampled estimates for BAI decision
-        means = estimates
-        max_mean = max(abs(means[active_arms]))
-
-        # Calculate confidence intervals based on estimated variance
-        radius = np.sqrt(estimated_variances / pulls) * np.sqrt(2 * np.log(len(active_arms) / delta))
-
-        # Eliminate arms based on confidence intervals
-        new_active_arms = []
-        for i in active_arms:
-            if abs(means[i]) + radius[i] >= max_mean - radius[i]:
-                new_active_arms.append(i)
-
-        active_arms = new_active_arms
-
-        print(f"After round {rounds}, active_arms: {active_arms}")
-        sampled_grads = [f"{estimates[i]:.6e}±{radius[i]:.6e}" for i in active_arms]
-        print(f"Sampled gradients: {sampled_grads}")
-
-        # Clean up memory after each round
-        del sampled_grads
-        gc.collect()
-
-    # Select best arm based on sampled estimates
-    means = estimates
-    best_arm = max(np.array(active_arms), key=lambda i: abs(means[i]))
-    best_gradient = abs(means[best_arm])
+    best_arm = max(np.array(active_arms), key=lambda i: abs(estimated_gradients[i]))
+    best_gradient = abs(estimated_gradients[best_arm])
 
     print(f"Final BAI result: {len(active_arms)} active arms remaining after {rounds} rounds")
     print(f"Selected best arm {best_arm} with sampled gradient magnitude {best_gradient:.6e}")
@@ -349,103 +289,6 @@ def get_counts_for_each_fragment(current_circuit, fragment_group_indices_map, ac
     return get_counts_for_each_fragment_exact(current_circuit, fragment_group_indices_map, active_qwc_groups, n_qubits, shots)
 
 
-def fast_energy_calculation(H_sparse_matrix, current_state, new_operator, new_param):
-    """
-    Fast energy calculation using sparse matrix operations and incremental updates.
-
-    Args:
-        H_sparse_matrix: Sparse Hamiltonian matrix
-        current_state: Current state vector (numpy array)
-        new_operator: New operator to apply
-        new_param: Parameter for the new operator
-
-    Returns:
-        energy: Energy expectation value
-        updated_state: Updated state vector
-    """
-    # Convert new operator to sparse matrix if needed
-    if hasattr(new_operator, 'to_matrix'):
-        # Convert to dense matrix first, then to sparse
-        dense_matrix = new_operator.to_matrix()
-        new_op_matrix = csr_matrix(dense_matrix)
-    else:
-        new_op_matrix = new_operator
-
-    # Apply the new operator using sparse matrix exponential
-    # Use expm_multiply for efficiency: exp(A) * v
-    updated_state = expm_multiply(new_param * new_op_matrix, current_state)
-
-    # Calculate energy using sparse matrix multiplication
-    energy = np.real(np.vdot(updated_state, H_sparse_matrix @ updated_state))
-
-    return energy, updated_state
-
-def incremental_energy_optimization(H_sparse_matrix, current_state, new_operator,
-                                  initial_guess=0.01, max_iter=20, tol=1e-6):
-    """
-    Fast single-parameter optimization using incremental updates.
-
-    Args:
-        H_sparse_matrix: Sparse Hamiltonian matrix
-        current_state: Current state vector
-        new_operator: New operator to optimize
-        initial_guess: Initial parameter guess
-        max_iter: Maximum optimization iterations
-        tol: Convergence tolerance
-
-    Returns:
-        optimal_param: Optimal parameter value
-        optimal_energy: Optimal energy value
-        final_state: Final state vector
-    """
-
-    def energy_function(param):
-        energy, _ = fast_energy_calculation(H_sparse_matrix, current_state, new_operator, param)
-        return energy
-
-    # Use simple gradient-free optimization for single parameter
-    # This is much faster than scipy.optimize for single parameter problems
-    param = initial_guess
-    step_size = 0.1
-    min_step = 1e-8
-
-    for iteration in range(max_iter):
-        # Calculate energy at current point
-        current_energy = energy_function(param)
-
-        # Calculate energy at param + step_size
-        energy_plus = energy_function(param + step_size)
-
-        # Calculate energy at param - step_size
-        energy_minus = energy_function(param - step_size)
-
-        # Estimate gradient
-        gradient = (energy_plus - energy_minus) / (2 * step_size)
-
-        # Update parameter
-        new_param = param - step_size * gradient
-
-        # Calculate new energy
-        new_energy = energy_function(new_param)
-
-        # Check convergence
-        if abs(new_energy - current_energy) < tol:
-            param = new_param
-            break
-
-        # Update parameter and step size
-        if new_energy < current_energy:
-            param = new_param
-            step_size = min(step_size * 1.1, 0.5)  # Increase step size
-        else:
-            step_size = max(step_size * 0.5, min_step)  # Decrease step size
-
-    # Get final state and energy
-    optimal_energy, final_state = fast_energy_calculation(H_sparse_matrix, current_state, new_operator, param)
-
-    return param, optimal_energy, final_state
-
-
 def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, shots=8192, max_iter=30, grad_tol=1e-2, verbose=True, mol='h4', save_intermediate=True, intermediate_filename='adapt_vqe_intermediate_results.csv', exact_energy=None):
     """
     ADAPT-VQE algorithm with multiprocessing support for gradient computation.
@@ -501,37 +344,54 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
         ansatz_ops.append(qubit_operator_to_qiskit_operator(generator_pool[best_idx], n_qubits))
         params.append(0.0)
 
-        # Replace the expensive optimization section with fast incremental optimization
-        print(f"  Starting fast incremental optimization...")
+                # Optimize parameters using scipy.optimize.minimize
+                # Ultra-fast single parameter optimization (fix existing parameters)
+        # This approach is much faster and more numerically stable than full re-optimization
+        energy_cache = {}
 
-        # Convert Hamiltonian to sparse matrix for faster operations
-        H_sparse_matrix = H_sparse_pauli_op.to_matrix(sparse=True)
+        # For single parameter optimization, we only optimize the new parameter
+        # while keeping all previous parameters fixed at their current values
+        def vqe_obj_single(new_param):
+            # Create parameter vector with existing params + new param
+            full_params = params[:-1] + [new_param]  # All previous + new parameter
 
-        # Get current state as numpy array for faster operations
-        current_state = final_statevector.data
+            # Convert to tuple for hashing
+            param_tuple = tuple(full_params)
+            if param_tuple in energy_cache:
+                return energy_cache[param_tuple]
 
-        # Use fast incremental optimization
-        optimal_param, optimal_energy, updated_state = incremental_energy_optimization(
-            H_sparse_matrix, current_state, ansatz_ops[-1],
-            initial_guess=0.01, max_iter=15, tol=1e-6
-        )
+            # Create statevector directly (much faster than circuit construction)
+            statevector = create_ansatz_statevector(n_qubits, n_electrons, ansatz_ops, full_params, mol=mol)
+            energy = measure_expectation_statevector(statevector, H_sparse_pauli_op)
+            energy_cache[param_tuple] = energy
+            return energy
 
-        # Update parameter and energy
-        params[-1] = optimal_param
-        energy = optimal_energy
 
-        # Update final statevector
-        final_statevector = Statevector(updated_state)
+        # Try optimization with different methods and starting points
+        initial_guess = params.copy()
+        print(f"  Starting optimization from: {initial_guess}")
+
+        # Use faster optimization with fewer function evaluations for large systems
+        max_iter = 30 if len(ansatz_ops) > 5 else 50  # Reduced iterations
+
+
+        # For small number of parameters, use single parameter optimization
+        # Optimize only the new parameter while keeping others fixed
+        res = minimize(lambda x: vqe_obj_single(x[0]), [0.01], method='L-BFGS-B',
+                      options={'maxiter': max_iter, 'disp': False, 'gtol': 1e-4})
+        params[-1] = res.x[0]  # Update only the new parameter
+
+        # Update energy using fast statevector approach
+        final_statevector = create_ansatz_statevector(n_qubits, n_electrons, ansatz_ops, params, mol=mol)
+        energy = measure_expectation_statevector(final_statevector, H_sparse_pauli_op)
         energies.append(energy)
 
         if verbose:
-            print(f"  Fast optimization completed in ~15 iterations")
             print(f"  Energy after iteration {iteration}: {energy:.8f}")
-            print(f"  Optimal parameter: {optimal_param:.6f}")
-
-        # Clean up memory
-        del H_sparse_matrix, current_state, updated_state
-        gc.collect()
+            if len(energy_cache) > 0:
+                print(f"  Single parameter optimization completed in {len(energy_cache)} function evaluations")
+            else:
+                print(f"  Single parameter optimization completed with ultra-fast line search")
 
         # Save intermediate results after each iteration
         if save_intermediate:
@@ -554,6 +414,10 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
                 N_est=N_est,
                 filename=intermediate_filename
             )
+
+        # Clean up memory after each iteration
+        del energy_cache, final_statevector
+        gc.collect()
 
     # Return final state using fast statevector approach
     final_state = create_ansatz_statevector(n_qubits, n_electrons, ansatz_ops, params, mol=mol)

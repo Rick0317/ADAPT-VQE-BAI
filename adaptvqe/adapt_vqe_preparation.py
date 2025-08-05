@@ -87,6 +87,76 @@ def save_results_to_csv(final_energy, total_measurements, exact_energy, fidelity
 
     print(f"Results saved to {filename}")
 
+def save_intermediate_results_to_csv(iteration, energy, params, ansatz_depth, total_measurements,
+                                   exact_energy, molecule_name, n_qubits, n_electrons, pool_size,
+                                   use_parallel, executor_type, max_workers,
+                                   total_measurements_at_each_step, total_measurements_trend_bai,N_est,
+                                   filename='adapt_vqe_intermediate_results.csv'):
+    """
+    Save intermediate ADAPT-VQE results after each iteration to a CSV file.
+
+    Args:
+        iteration: Current iteration number
+        energy: Current energy from ADAPT-VQE
+        params: Current parameter values
+        ansatz_depth: Current ansatz depth (number of operators)
+        total_measurements: Total number of measurements used so far
+        exact_energy: Exact ground state energy from diagonalization
+        molecule_name: Name of the molecule
+        n_qubits: Number of qubits
+        n_electrons: Number of electrons
+        pool_size: Size of the operator pool
+        use_parallel: Whether parallel evaluation was used
+        executor_type: Type of executor used ('process' or 'thread')
+        max_workers: Maximum number of workers used
+        total_measurements_at_each_step: List of total measurements at each step
+        total_measurements_trend_bai: Dictionary of BAI measurement trends
+        filename: CSV filename to save results
+    """
+
+    # Check if file exists to determine if we need to write headers
+    file_exists = os.path.isfile(filename)
+
+    # Prepare the row data
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    energy_error = abs(energy - exact_energy)
+
+    row_data = {
+        'timestamp': timestamp,
+        'iteration': iteration,
+        'molecule': molecule_name,
+        'n_qubits': n_qubits,
+        'n_electrons': n_electrons,
+        'pool_size': pool_size,
+        'current_energy': energy,
+        'exact_energy': exact_energy,
+        'energy_error': energy_error,
+        'ansatz_depth': ansatz_depth,
+        'total_measurements': total_measurements,
+        'use_parallel': use_parallel,
+        'executor_type': executor_type if use_parallel else 'serial',
+        'max_workers': max_workers if use_parallel else 1,
+        'parameters': str(params),  # Convert list to string for CSV
+        'total_measurements_at_each_step': str(total_measurements_at_each_step),
+        'total_measurements_trend_bai': str(total_measurements_trend_bai),
+        'Estiamted measurements [0.001, 0.01, 0.1]': N_est
+    }
+
+    # Write to CSV
+    with open(filename, 'a', newline='') as csvfile:
+        fieldnames = list(row_data.keys())
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        # Write header if file is new
+        if not file_exists:
+            writer.writeheader()
+
+        # Write the data row
+        writer.writerow(row_data)
+
+    print(f"Intermediate results for iteration {iteration} saved to {filename}")
+
+
 def compute_gradient(H_sparse, op_sparse, state):
     """Compute gradient ⟨ψ|[H,G]|ψ⟩ = ⟨ψ|HG - GH|ψ⟩"""
     HP_psi = H_sparse.dot(op_sparse.dot(state))
@@ -215,7 +285,44 @@ def create_ansatz_circuit(n_qubits, n_electrons, operators, parameters, mol='h4'
     for op, theta in zip(operators, parameters):
         # Apply exp(i * theta * op) to the circuit
         # Compute matrix exponential: exp(i * theta * G)
+        # Note: operators are anti-Hermitian generators, so i*operator is Hermitian
         unitary_matrix = expm(theta * op.data)
         unitary_gate = Operator(unitary_matrix)
         circuit.append(unitary_gate, range(n_qubits))
     return circuit
+
+def get_hf_statevector(n_qubits, n_electrons, mol='h4'):
+    """Get Hartree-Fock statevector directly without circuit construction"""
+    ref_occ = get_occ_no(mol, n_qubits)
+    hf_state = get_reference_state(ref_occ, gs_format='wfs')
+    # Normalize the state vector to avoid precision issues
+    hf_state_normalized = hf_state / np.linalg.norm(hf_state)
+    return Statevector(hf_state_normalized)
+
+
+def apply_operator_to_statevector(statevector, operator, theta):
+    """Apply exp(i * theta * operator) to a statevector directly"""
+    # Compute matrix exponential: exp(i * theta * G)
+    # Note: operator is anti-Hermitian generator, so i*operator is Hermitian
+    # This matches the physics: exp(iθG) where G is anti-Hermitian
+    unitary_matrix = expm(theta * operator.data)
+    # Apply unitary to statevector
+    new_statevector = unitary_matrix @ statevector.data
+    return Statevector(new_statevector)
+
+
+def create_ansatz_statevector(n_qubits, n_electrons, operators, parameters, mol='h4'):
+    """Create parameterized ansatz statevector directly without circuit construction"""
+    # Start with HF statevector
+    statevector = get_hf_statevector(n_qubits, n_electrons, mol=mol)
+
+    # Apply each operator with its parameter
+    for op, theta in zip(operators, parameters):
+        statevector = apply_operator_to_statevector(statevector, op, theta)
+
+    return statevector
+
+
+def measure_expectation_statevector(statevector, observable):
+    """Measure expectation value of an observable given a statevector directly"""
+    return np.real(statevector.expectation_value(observable))
