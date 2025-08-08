@@ -165,13 +165,17 @@ def compute_exact_commutator_gradient_with_statevector(current_statevector, H_qu
 
         # Calculate fragment statistics
         fragment_mean = np.mean(fragment_samples)
-
-        fragment_variance = fragment_exact_variance
+        if len(fragment_samples) > 1:
+            fragment_variance = np.var(fragment_samples, ddof=1)
+        else:
+            fragment_variance = 0
 
         fragment_expectations.append(fragment_mean)
         fragment_variances.append(fragment_variance)
         total_shots += shots_per_fragment
 
+        # Clean up
+        del fragment_samples
 
     # Vectorized N_est calculation
     N_est = [gradient_variance / epsilon**2 for epsilon in epsilons]
@@ -241,7 +245,7 @@ def _compute_single_exact_gradient_bai_with_statevector(args):
 
 
 @track_memory_usage
-def bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, iteration, n_qubits, delta=0.05, max_rounds=10, shots_per_round=4096):
+def bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, n_qubits, x, y, max_rounds=10, shots_per_round=4096):
     """
     BAI algorithm using exact gradients as means and sampling from normal distributions.
     Computes exact gradients once, then samples from normal distributions for BAI rounds.
@@ -276,11 +280,12 @@ def bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op
     while len(active_arms) > 1 and rounds < max_rounds:
         rounds += 1
         print(f"Round {rounds}")
-        radius = 0.002 - 0.0001 * rounds
+        # accuracy = 0.005 - 0.0004 * rounds
+        accuracy = x - (x - 0.001) * rounds / 10
 
         args_list = [
             (i, current_statevector, H_qubit_op, generator_pool[i],
-             commutator_indices_map[i], n_qubits, radius)
+             commutator_indices_map[i], n_qubits, accuracy)
             for i in active_arms
         ]
 
@@ -314,7 +319,7 @@ def bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op
                 exact_grad, variance, N_est, total_shots = compute_exact_commutator_gradient_with_statevector(
                     current_statevector, H_qubit_op, generator_pool[i],
                     commutator_indices_map[i], n_qubits,
-                    radius
+                    accuracy
                 )
                 estimated_gradients[i] = exact_grad
                 estimated_variances[i] = variance
@@ -347,7 +352,8 @@ def bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op
 
         # Calculate confidence intervals based on estimated variance
         # radius = np.sqrt(estimated_variances / pulls) * np.sqrt(2 * np.log(len(active_arms) / delta))
-
+        # radius = accuracy * 5
+        radius = accuracy * y
 
         # Eliminate arms based on confidence intervals
         new_active_arms = []
@@ -491,85 +497,197 @@ def fast_energy_calculation(H_sparse_matrix, current_state, new_operator, new_pa
     return energy, updated_state
 
 @track_memory_usage
-def incremental_energy_optimization(H_sparse_matrix, current_state, new_operator,
-                                  initial_guess=0.01, max_iter=50, tol=1e-6):
+def scipy_multi_parameter_energy_optimization(H_sparse_matrix, current_state, ansatz_ops, params,
+                                            max_iter=50, tol=1e-6):
     """
-    Fast single-parameter optimization using incremental updates.
+    Multi-parameter energy optimization using scipy.minimize for robust parameter optimization.
 
     Args:
         H_sparse_matrix: Sparse Hamiltonian matrix
         current_state: Current state vector
-        new_operator: New operator to optimize
-        initial_guess: Initial parameter guess
+        ansatz_ops: List of ansatz operators
+        params: Current parameter values
         max_iter: Maximum optimization iterations
         tol: Convergence tolerance
 
     Returns:
-        optimal_param: Optimal parameter value
+        optimal_params: Optimal parameter values
         optimal_energy: Optimal energy value
         final_state: Final state vector
     """
 
-    def energy_function(param):
-        energy, _ = fast_energy_calculation(H_sparse_matrix, current_state, new_operator, param)
-        # Clean up after each energy calculation
+    def energy_function(param_vector):
+        # Ensure parameter vector length matches number of operators
+        if len(param_vector) != len(ansatz_ops):
+            raise ValueError(f"Parameter vector length {len(param_vector)} doesn't match number of operators {len(ansatz_ops)}")
+
+        # Apply all operators in sequence with their respective parameters
+        state = current_state.copy()
+
+        for i, (operator, param) in enumerate(zip(ansatz_ops, param_vector)):
+            _, state = fast_energy_calculation(H_sparse_matrix, state, operator, param)
+
+        # Calculate final energy of the state after all operators are applied
+        if hasattr(H_sparse_matrix, 'toarray'):  # If it's a sparse matrix
+            H_dense = H_sparse_matrix.toarray()
+            temp_vector = H_dense @ state
+            final_energy = np.real(np.vdot(state, temp_vector))
+            del H_dense, temp_vector
+        else:  # If it's already a dense matrix
+            temp_vector = H_sparse_matrix @ state
+            final_energy = np.real(np.vdot(state, temp_vector))
+            del temp_vector
+
+        # Clean up intermediate state
+        del state
         gc.collect()
-        return energy
 
-    # Use simple gradient-free optimization for single parameter
-    # This is much faster than scipy.optimize for single parameter problems
-    param = initial_guess
-    step_size = 0.1
-    min_step = 1e-8
+        # Validate energy value
+        if not np.isfinite(final_energy):
+            print(f"    Warning: Non-finite energy detected: {final_energy}")
+            return float('inf')
 
-    for iteration in range(max_iter):
-        # Calculate energy at current point
-        current_energy = energy_function(param)
+        return final_energy
 
-        # Calculate energy at param + step_size
-        energy_plus = energy_function(param + step_size)
+    # Use scipy.minimize with L-BFGS-B method for multi-parameter optimization
+    from scipy.optimize import minimize
 
-        # Calculate energy at param - step_size
-        energy_minus = energy_function(param - step_size)
+    # Try different optimization methods for robustness
+    methods_to_try = ['L-BFGS-B']
+    best_result = None
+    best_energy = float('inf')
 
-        # Estimate gradient
-        gradient = (energy_plus - energy_minus) / (2 * step_size)
+    # Create bounds for all parameters - use wider bounds for better exploration
+    bounds = [(-2*np.pi, 2*np.pi) for _ in range(len(params))]
 
-        # Update parameter
-        new_param = param - step_size * gradient
+    # Print initial energy for debugging
+    initial_energy = energy_function(params)
+    print(f"    Initial energy: {initial_energy:.8f}")
+    print(f"    Initial parameters: {[f'{p:.6f}' for p in params]}")
 
-        # Calculate new energy
-        new_energy = energy_function(new_param)
+    # Test energy calculation with zero parameters to verify it's working
+    if len(params) > 0:
+        zero_params = [0.0] * len(params)
+        zero_energy = energy_function(zero_params)
+        print(f"    Energy with zero parameters: {zero_energy:.8f}")
+        if abs(zero_energy - initial_energy) < 1e-10:
+            print("    Warning: Energy calculation might not be working correctly (zero params = initial params)")
 
-        # Check convergence
-        if abs(new_energy - current_energy) < tol:
-            param = new_param
-            break
+    for method in methods_to_try:
+        try:
+            # Powell method doesn't support bounds
+            if method == 'Powell':
+                result = minimize(
+                    energy_function,
+                    params,  # Use current parameters as initial guess
+                    method=method,
+                    options={
+                        'maxiter': max_iter,
+                        'disp': False,
+                        'ftol': tol
+                    }
+                )
+            else:
+                result = minimize(
+                    energy_function,
+                    params,  # Use current parameters as initial guess
+                    method=method,
+                    options={
+                        'maxiter': max_iter,
+                        'disp': False,
+                        'gtol': tol,
+                        'ftol': tol
+                    },
+                    bounds=bounds if method == 'L-BFGS-B' else None
+                )
 
-        # Update parameter and step size
-        if new_energy < current_energy:
-            param = new_param
-            step_size = min(step_size * 1.1, 0.5)  # Increase step size
-        else:
-            step_size = max(step_size * 0.5, min_step)  # Decrease step size
+            print(f"    Method {method}: success={result.success}, energy={result.fun:.8f}, iterations={result.nit}")
+            if result.success:
+                param_changes = [f"{result.x[i]-params[i]:+.4f}" for i in range(len(params))]
+                print(f"    Parameter changes: {param_changes}")
 
-        # Clean up after each iteration
-        if iteration % 3 == 0:  # Clean up every 3 iterations
-            gc.collect()
+            if result.success and result.fun < best_energy:
+                best_result = result
+                best_energy = result.fun
 
-    optimal_energy, final_state = fast_energy_calculation(H_sparse_matrix, current_state, new_operator, param)
+        except Exception as e:
+            print(f"    Method {method} failed: {e}")
+            continue
+
+    # If all methods failed, use the last result or fallback
+    if best_result is None:
+        print("    All optimization methods failed, using fallback")
+        # Fallback to simple grid search for each parameter
+        optimal_params = list(params)  # Ensure it's a list
+        optimal_energy = energy_function(params)
+
+        # Try small perturbations around current parameters
+        for i in range(len(params)):
+            param_range = np.linspace(max(-np.pi, params[i] - 0.5), min(np.pi, params[i] + 0.5), 20)
+            best_param = params[i]
+            best_param_energy = optimal_energy
+
+            for param in param_range:
+                test_params = optimal_params.copy()
+                test_params[i] = param
+                test_energy = energy_function(test_params)
+
+                if test_energy < best_param_energy:
+                    best_param = param
+                    best_param_energy = test_energy
+
+            optimal_params[i] = best_param
+            optimal_energy = best_param_energy
+    else:
+        optimal_params = best_result.x  # This is a numpy array
+        optimal_energy = best_result.fun
+
+    # Check if we actually got improvement
+    energy_improvement = initial_energy - optimal_energy
+    print(f"    Energy improvement: {energy_improvement:.8f}")
+    if energy_improvement < 1e-8:
+        print("    Warning: No significant energy improvement achieved")
+        print("    Trying grid search for better initial values...")
+
+        # Try grid search around current parameters
+        best_grid_energy = optimal_energy
+        best_grid_params = optimal_params.copy() if hasattr(optimal_params, 'copy') else list(optimal_params)
+
+        # Search in a grid around current parameters
+        for i in range(len(params)):
+            param_range = np.linspace(-0.5, 0.5, 10)  # Search in [-0.5, 0.5] range
+            for param_offset in param_range:
+                test_params = best_grid_params.copy()
+                test_params[i] = params[i] + param_offset
+                test_energy = energy_function(test_params)
+
+                if test_energy < best_grid_energy:
+                    best_grid_energy = test_energy
+                    best_grid_params = test_params.copy()
+
+        # Use grid search result if it's better
+        if best_grid_energy < optimal_energy:
+            optimal_params = best_grid_params
+            optimal_energy = best_grid_energy
+            energy_improvement = initial_energy - optimal_energy
+            print(f"    Grid search improved energy to: {optimal_energy:.8f}")
+            print(f"    Final energy improvement: {energy_improvement:.8f}")
+
+    # Calculate final state with optimal parameters
+    final_state = current_state.copy()
+    for operator, param in zip(ansatz_ops, optimal_params):
+        _, final_state = fast_energy_calculation(H_sparse_matrix, final_state, operator, param)
 
     # Aggressive cleanup
-    del energy_function, step_size, min_step
-    del current_energy, energy_plus, energy_minus, gradient, new_param, new_energy
+    del energy_function, best_result, best_energy, bounds
     gc.collect()
-    print_memory_usage("after incremental_energy_optimization cleanup")
+    print_memory_usage("after scipy_multi_parameter_energy_optimization cleanup")
 
-    return param, optimal_energy, final_state
+    return optimal_params, optimal_energy, final_state
 
 
 @track_memory_usage
-def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, shots=8192, max_iter=30, grad_tol=1e-2, verbose=True, mol='h4', save_intermediate=True, intermediate_filename='adapt_vqe_intermediate_results.csv', exact_energy=None):
+def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, x, y, shots=8192, max_iter=30, grad_tol=1e-2, verbose=True, mol='h4', save_intermediate=True, intermediate_filename='adapt_vqe_intermediate_results.csv', exact_energy=None):
     """
     ADAPT-VQE algorithm with multiprocessing support for gradient computation.
 
@@ -612,7 +730,7 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
         grads = []
 
         max_grad, best_idx, total_measurements_across_fragments, measurements_trend_bai, N_est = (
-            bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, iteration, n_qubits, shots_per_round=int(shots)))
+            bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, n_qubits, x, y, shots_per_round=int(shots)))
 
         total_measurements += total_measurements_across_fragments
         total_measurements_at_each_step.append(total_measurements)
@@ -628,10 +746,14 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
 
         # Add best operator to ansatz
         ansatz_ops.append(qubit_operator_to_qiskit_operator(generator_pool[best_idx], n_qubits))
-        params.append(0.0)
 
-        # Replace the expensive optimization section with fast incremental optimization
-        print(f"  Starting fast incremental optimization...")
+        # Use a better initial parameter value based on the gradient
+        # If gradient is positive, start with a small positive value; if negative, start with a small negative value
+        initial_param = 0.01 if max_grad > 0 else -0.01
+        params.append(initial_param)
+
+        # Replace the expensive optimization section with multi-parameter scipy.minimize optimization
+        print(f"  Starting multi-parameter scipy.minimize optimization...")
 
         # Keep Hamiltonian sparse for memory efficiency
         H_sparse_matrix = H_sparse_pauli_op.to_matrix(sparse=True)
@@ -639,28 +761,50 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
         # Get current state as numpy array for faster operations
         current_state = final_statevector.data
 
-        # Use fast incremental optimization
-        optimal_param, optimal_energy, updated_state = incremental_energy_optimization(
-            H_sparse_matrix, current_state, ansatz_ops[-1],
-            initial_guess=0.01, max_iter=15, tol=1e-6
-        )
-
-        # Update parameter and energy
-        params[-1] = optimal_param
-        energy = optimal_energy
+        # Use multi-parameter scipy.minimize optimization
+        if len(ansatz_ops) > 0:
+            optimal_params, optimal_energy, updated_state = scipy_multi_parameter_energy_optimization(
+                H_sparse_matrix, current_state, ansatz_ops, params,
+                max_iter=30, tol=1e-6
+            )
+            # Update all parameters and energy
+            # Convert numpy array to list if necessary
+            if hasattr(optimal_params, 'tolist'):
+                params = optimal_params.tolist()
+            elif isinstance(optimal_params, (list, tuple)):
+                params = list(optimal_params)
+            else:
+                params = [float(optimal_params)]  # Handle single parameter case
+            energy = optimal_energy
+        else:
+            # No operators yet, just use the current state and energy
+            optimal_params = []
+            optimal_energy = energy
+            updated_state = current_state
+            # Ensure params remains a list
+            params = list(params) if not isinstance(params, list) else params
 
         # Update final statevector
         final_statevector = Statevector(updated_state)
         energies.append(energy)
 
         if verbose:
-            print(f"  Fast optimization completed in ~15 iterations")
-            print(f"  Energy after iteration {iteration}: {energy:.8f}")
-            print(f"  Optimal parameter: {optimal_param:.6f}")
+            if len(ansatz_ops) > 0:
+                print(f"  Multi-parameter scipy.minimize optimization completed")
+                print(f"  Energy after iteration {iteration}: {energy:.8f}")
+                print(f"  Optimal parameters: {[f'{p:.6f}' for p in optimal_params]}")
+                # Show energy improvement
+                if iteration > 0 and len(energies) > 0:
+                    energy_improvement = energies[-1] - energy
+                    print(f"  Energy improvement: {energy_improvement:.8f}")
+            else:
+                print(f"  No operators yet, skipping optimization")
+                print(f"  Energy after iteration {iteration}: {energy:.8f}")
 
         # Clean up memory
         del H_sparse_matrix, current_state, updated_state
-        del optimal_param, optimal_energy
+        if len(ansatz_ops) > 0:
+            del optimal_params, optimal_energy
         gc.collect()
 
         # Force garbage collection multiple times
@@ -708,7 +852,7 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
 if __name__ == "__main__":
     print_memory_usage("at script start")
 
-    if len(sys.argv) < 7:
+    if len(sys.argv) < 9:
         print("Usage: python my_script.py <mol_file> <mol> <n_qubits> <n_electrons> <pool_type>")
         sys.exit(1)
 
@@ -723,6 +867,8 @@ if __name__ == "__main__":
     n_electrons = int(sys.argv[4])
     pool_type = sys.argv[5]
     shots = sys.argv[6]
+    x = float(sys.argv[7])
+    y = int(sys.argv[8])
 
     now = datetime.now()
 
@@ -767,13 +913,14 @@ if __name__ == "__main__":
     executor_type = 'multiprocessing'
     molecule_name = mol
 
+
     # Intermediate saving configuration
     save_intermediate = True
-    intermediate_filename = f'adapt_vqe_intermediate_{mol}_{pool_type}_results_{time_string}.csv'
+    intermediate_filename = f'adapt_vqe_intermediate_{mol}_{pool_type}_results_{time_string}_{x}_{y}.csv'
 
     energies, params, ansatz, final_state, total_measurements, total_measurements_at_each_step, total_measurements_trend_bai = adapt_vqe_qiskit(
         H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, generator_pool,
-        fragment_group_indices_map, commutator_indices_map, mol=mol, exact_energy=exact_energy,
+        fragment_group_indices_map, commutator_indices_map, x, y, mol=mol, exact_energy=exact_energy,
         save_intermediate=save_intermediate, intermediate_filename=intermediate_filename)
 
     # Calculate results

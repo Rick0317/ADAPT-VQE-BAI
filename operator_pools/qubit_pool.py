@@ -58,27 +58,26 @@ def get_qubit_adapt_pool(site: int, n_elec: int):
 
     # Generate one-body excitations (singles)
     singles_count = 0
-    for p in range(n_elec, site):
-        for q in range(n_elec):
-            if p % 2 == q % 2:  # Same spin
+    for p in range(0, n_elec):
+        for q in range(n_elec, site):
+            if (p + q) % 2 == 0:  # Same spin
                 one_body = get_anti_hermitian_one_body((p, q))
                 fermion_operators.append(("single", (p, q), one_body))
                 singles_count += 1
 
     # Generate two-body excitations (doubles)
     doubles_count = 0
-    for p in range(n_elec, site):
-        for q in range(n_elec):
-            for r in range(n_elec, site):
-                for s in range(n_elec):
-                    # Spin conservation: either same-spin pairs or opposite-spin pairs
-                    same_spin_pairs = (p % 2 == q % 2 and r % 2 == s % 2)
-                    opposite_spin_pairs = (p % 2 == s % 2 and r % 2 == q % 2)
-
-                    if (same_spin_pairs or opposite_spin_pairs) and p != r and s != q:
-                        two_body = get_anti_hermitian_two_body((p, r, s, q))
-                        fermion_operators.append(("double", (p, r, s, q), two_body))
-                        doubles_count += 1
+    for p in range(0, n_elec):
+        for q in range(p + 1, n_elec):
+            for r in range(n_elec, site - 1):
+                for s in range(r + 1, site):
+                    if (p + q + r + s) % 2 != 0:
+                        continue
+                    if p % 2 + q % 2 != r % 2 + s % 2:
+                        continue
+                    two_body = get_anti_hermitian_two_body((p, r, s, q))
+                    fermion_operators.append(("double", (p, r, s, q), two_body))
+                    doubles_count += 1
 
     print(f"Generated {singles_count} singles and {doubles_count} doubles")
     print(f"Total fermionic operators: {len(fermion_operators)}")

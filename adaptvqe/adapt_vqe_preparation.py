@@ -91,6 +91,7 @@ def save_intermediate_results_to_csv(iteration, energy, params, ansatz_depth, to
                                    exact_energy, molecule_name, n_qubits, n_electrons, pool_size,
                                    use_parallel, executor_type, max_workers,
                                    total_measurements_at_each_step, total_measurements_trend_bai,N_est,
+                                   best_idx,
                                    filename='adapt_vqe_intermediate_results.csv'):
     """
     Save intermediate ADAPT-VQE results after each iteration to a CSV file.
@@ -139,7 +140,8 @@ def save_intermediate_results_to_csv(iteration, energy, params, ansatz_depth, to
         'parameters': str(params),  # Convert list to string for CSV
         'total_measurements_at_each_step': str(total_measurements_at_each_step),
         'total_measurements_trend_bai': str(total_measurements_trend_bai),
-        'Estiamted measurements [0.001, 0.01, 0.1]': N_est
+        'Estiamted measurements [0.001, 0.01, 0.1]': N_est,
+        'best_idx': best_idx,
     }
 
     # Write to CSV

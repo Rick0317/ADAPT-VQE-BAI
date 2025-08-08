@@ -1,7 +1,8 @@
 from openfermion import QubitOperator
 import numpy as np
 from itertools import combinations
-
+from openfermion import FermionOperator, QubitOperator, hermitian_conjugated, normal_ordered, jordan_wigner, get_sparse_operator
+from utils.qubit_utils import remove_z_string
 
 def create_q_operators(n_qubits):
     """
@@ -46,30 +47,42 @@ def generate_single_excitation_generators(n_qubits, n_electrons, q_ops,
     occupied = list(range(n_electrons))
     virtual = list(range(n_electrons, n_qubits))
 
-    for a in virtual:  # virtual orbital (unoccupied)
-        for i in occupied:  # occupied orbital
-            # Check spin symmetry: only allow same-spin excitations or spin-flips
-            a_spin = a % 2  # 0 for even (alpha), 1 for odd (beta)
-            i_spin = i % 2  # 0 for even (alpha), 1 for odd (beta)
+    for p in range(0, n_qubits):
 
-            # Allow same-spin excitations and spin-flip excitations
-            if True:  # For now, allow all excitations - can be restricted later
-                # T_ai = Q_a^dagger * Q_i - Q_i^dagger * Q_a
-                term1 = q_dag_ops[a] * q_ops[
-                    i]  # Create in virtual, annihilate in occupied
-                term2 = q_dag_ops[i] * q_ops[a]  # Hermitian conjugate
-                generator = term1 - term2
+        for q in range(p + 1, n_qubits):
 
-                # Only keep non-zero generators
-                if generator.terms:  # Check if dictionary is non-empty
-                    spin_type = "same-spin" if a_spin == i_spin else "spin-flip"
-                    single_generators.append({
-                        'operator': generator,
-                        'type': 'single_excitation',
-                        'indices': (a, i),  # (virtual, occupied)
-                        'spin_type': spin_type,
-                        'description': f'T_{a}{i}: Q_{a}^dag * Q_{i} - Q_{i}^dag * Q_{a} ({spin_type})'
-                    })
+            if (p + q) % 2 == 0:
+                f_operator = FermionOperator(((p, 1), (q, 0)))
+                f_operator -= hermitian_conjugated(f_operator)
+                f_operator = normal_ordered(f_operator)
+
+                q_operator = remove_z_string(f_operator)
+                single_generators.append(q_operator)
+
+    # for a in virtual:  # virtual orbital (unoccupied)
+    #     for i in occupied:  # occupied orbital
+    #         # Check spin symmetry: only allow same-spin excitations or spin-flips
+    #         a_spin = a % 2  # 0 for even (alpha), 1 for odd (beta)
+    #         i_spin = i % 2  # 0 for even (alpha), 1 for odd (beta)
+    #
+    #         # Allow same-spin excitations and spin-flip excitations
+    #         if True:  # For now, allow all excitations - can be restricted later
+    #             # T_ai = Q_a^dagger * Q_i - Q_i^dagger * Q_a
+    #             term1 = q_dag_ops[a] * q_ops[
+    #                 i]  # Create in virtual, annihilate in occupied
+    #             term2 = q_dag_ops[i] * q_ops[a]  # Hermitian conjugate
+    #             generator = term1 - term2
+    #
+    #             # Only keep non-zero generators
+    #             if generator.terms:  # Check if dictionary is non-empty
+    #                 spin_type = "same-spin" if a_spin == i_spin else "spin-flip"
+    #                 single_generators.append({
+    #                     'operator': generator,
+    #                     'type': 'single_excitation',
+    #                     'indices': (a, i),  # (virtual, occupied)
+    #                     'spin_type': spin_type,
+    #                     'description': f'T_{a}{i}: Q_{a}^dag * Q_{i} - Q_{i}^dag * Q_{a} ({spin_type})'
+    #                 })
 
     return single_generators
 
@@ -94,6 +107,9 @@ def generate_double_excitation_generators(n_qubits, n_electrons, q_ops,
     # Virtual orbitals: n_electrons to n_qubits-1
     occupied = list(range(n_electrons))
     virtual = list(range(n_electrons, n_qubits))
+
+
+
 
     # Generate combinations of virtual pairs (a,b) and occupied pairs (i,j)
     for a in virtual:

@@ -132,7 +132,6 @@ def compute_exact_commutator_gradient_with_statevector(current_statevector, H_qu
     fragment_expectations = []
     fragment_variances = []
     gradient_variance = 0
-    total_shots = 0
 
     for i, group in enumerate(pauli_groups):
         group_op = openfermion_qubitop_to_sparsepauliop(group, n_qubits)
@@ -160,18 +159,19 @@ def compute_exact_commutator_gradient_with_statevector(current_statevector, H_qu
             np.sqrt(fragment_exact_variance),
             shots_per_fragment
         ))
-
         gradient_variance += fragment_exact_variance
 
         # Calculate fragment statistics
         fragment_mean = np.mean(fragment_samples)
-
-        fragment_variance = fragment_exact_variance
-
+        if len(fragment_samples) > 1:
+            fragment_variance = np.var(fragment_samples, ddof=1)
+        else:
+            fragment_variance = 0
         fragment_expectations.append(fragment_mean)
         fragment_variances.append(fragment_variance)
-        total_shots += shots_per_fragment
 
+        # Clean up
+        del fragment_samples
 
     # Vectorized N_est calculation
     N_est = [gradient_variance / epsilon**2 for epsilon in epsilons]
@@ -190,7 +190,7 @@ def compute_exact_commutator_gradient_with_statevector(current_statevector, H_qu
     del state_vector, expectations, coeffs, pauli_strings
     gc.collect()
 
-    return estimated_gradient, estimated_variance, N_est, total_shots
+    return estimated_gradient, estimated_variance, N_est
 
 def compute_pauli_expectation_fast(state_vector, pauli_string, n_qubits):
     """
@@ -208,31 +208,20 @@ def compute_pauli_expectation_fast(state_vector, pauli_string, n_qubits):
 
     return np.real(expectation)
 
-
-
-def compute_exact_commutator_gradient(current_circuit, H_qubit_op, generator_op, fragment_indices, n_qubits, radius):
-    """
-    Wrapper function that uses the fast implementation
-    """
-    # Get statevector from circuit
-    current_statevector = get_statevector(current_circuit)
-    return compute_exact_commutator_gradient_with_statevector(current_statevector, H_qubit_op, generator_op, fragment_indices, n_qubits, radius)
-
-
 def _compute_single_exact_gradient_bai_with_statevector(args):
     """Worker function for parallel exact gradient computation in BAI using statevector directly"""
     try:
         arm_index, current_statevector, H_qubit_op, generator_op, fragment_indices, n_qubits, radius = args
 
         # Compute exact gradient for this arm using statevector directly
-        estimate_gradient, estimate_variance, N_est, total_shots = compute_exact_commutator_gradient_with_statevector(
+        estimate_gradient, estimate_variance, N_est = compute_exact_commutator_gradient_with_statevector(
             current_statevector, H_qubit_op, generator_op, fragment_indices, n_qubits, radius=radius
         )
 
         # Clean up and return
         del current_statevector, H_qubit_op, generator_op, fragment_indices
         gc.collect()
-        return arm_index, estimate_gradient, estimate_variance, N_est, total_shots
+        return arm_index, estimate_gradient, estimate_variance, N_est
 
     except Exception as e:
         print(f"Error computing exact gradient for arm {arm_index}: {e}")
@@ -241,7 +230,7 @@ def _compute_single_exact_gradient_bai_with_statevector(args):
 
 
 @track_memory_usage
-def bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, iteration, n_qubits, delta=0.05, max_rounds=10, shots_per_round=4096):
+def find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, iteration, n_qubits, delta=0.05, max_rounds=10, shots_per_round=4096):
     """
     BAI algorithm using exact gradients as means and sampling from normal distributions.
     Computes exact gradients once, then samples from normal distributions for BAI rounds.
@@ -273,100 +262,83 @@ def bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op
     print("Computing exact gradients for all arms...")
 
     # Now run BAI algorithm using sampling from normal distributions
-    while len(active_arms) > 1 and rounds < max_rounds:
-        rounds += 1
-        print(f"Round {rounds}")
-        radius = 0.002 - 0.0001 * rounds
+    radius = 0.001
 
-        args_list = [
-            (i, current_statevector, H_qubit_op, generator_pool[i],
-             commutator_indices_map[i], n_qubits, radius)
-            for i in active_arms
-        ]
+    args_list = [
+        (i, current_statevector, H_qubit_op, generator_pool[i],
+         commutator_indices_map[i], n_qubits, radius)
+        for i in active_arms
+    ]
 
-        num_processes = min(6, len(active_arms))
-        shots_across_gradient = 0
+    num_processes = min(6, len(active_arms))
 
-        try:
-            with Pool(num_processes) as p:
-                exact_results = p.map(
-                    _compute_single_exact_gradient_bai_with_statevector,
-                    args_list)
+    try:
+        with Pool(num_processes) as p:
+            exact_results = p.map(
+                _compute_single_exact_gradient_bai_with_statevector,
+                args_list)
 
-            # Store exact gradients and variances
-            for arm_index, estimate_gradient, estimate_variance, N_est, total_shots in exact_results:
-                estimated_gradients[arm_index] = estimate_gradient
-                estimated_variances[arm_index] = estimate_variance
-                exact_N_est += np.array(N_est, np.float64)
-                shots_across_gradient += total_shots
+        # Store exact gradients and variances
+        for arm_index, estimate_gradient, estimate_variance, N_est in exact_results:
+            estimated_gradients[arm_index] = estimate_gradient
+            estimated_variances[arm_index] = estimate_variance
+            exact_N_est += np.array(N_est, np.float64)
+            print(f"Estimate_gradient: {estimate_gradient}")
 
-            # Clean up parallel processing results
-            del exact_results, args_list
-            print_memory_usage("after parallel gradient computation")
+        # Clean up parallel processing results
+        del exact_results, args_list
+        print_memory_usage("after parallel gradient computation")
+        force_memory_cleanup()
+
+
+    except Exception as e:
+        print(
+            f"Parallel exact gradient computation failed ({e}), falling back to sequential")
+        # Fallback to sequential processing
+        for i in active_arms:
+            exact_grad, variance, N_est = compute_exact_commutator_gradient_with_statevector(
+                current_statevector, H_qubit_op, generator_pool[i],
+                commutator_indices_map[i], n_qubits,
+                radius
+            )
+            estimated_gradients[i] = exact_grad
+            estimated_variances[i] = variance
+            exact_N_est += np.array(N_est, np.float64)
+
+            # Clean up after each gradient computation
+            gc.collect()
             force_memory_cleanup()
 
 
-        except Exception as e:
-            print(
-                f"Parallel exact gradient computation failed ({e}), falling back to sequential")
-            # Fallback to sequential processing
-            for i in active_arms:
-                exact_grad, variance, N_est, total_shots = compute_exact_commutator_gradient_with_statevector(
-                    current_statevector, H_qubit_op, generator_pool[i],
-                    commutator_indices_map[i], n_qubits,
-                    radius
-                )
-                estimated_gradients[i] = exact_grad
-                estimated_variances[i] = variance
-                exact_N_est += np.array(N_est, np.float64)
+    # Sample from normal distributions using estimated gradients as means
+    for i in active_arms:
+        # Sample from normal distribution with estimated gradient as mean and computed variance
 
-                # Clean up after each gradient computation
-                gc.collect()
-                force_memory_cleanup()
+        # Update running estimates
+        if pulls[i] == 0:
+            estimates[i] = estimated_gradients[i]
+        else:
+            # Update running mean
+            estimates[i] = (estimates[i] * pulls[i] + estimated_gradients[i] * shots_per_round) / (pulls[i] + shots_per_round)
 
+        pulls[i] += shots_per_round
 
-        # Sample from normal distributions using estimated gradients as means
-        for i in active_arms:
-            # Sample from normal distribution with estimated gradient as mean and computed variance
+    total_measurements_across_fragments += len(active_arms) * shots_per_round
+    measurements_trend_bai.append(total_measurements_across_fragments)
 
-            # Update running estimates
-            if pulls[i] == 0:
-                estimates[i] = estimated_gradients[i]
-            else:
-                # Update running mean
-                estimates[i] = (estimates[i] * pulls[i] + estimated_gradients[i] * shots_per_round) / (pulls[i] + shots_per_round)
-
-            pulls[i] += shots_per_round
-
-        total_measurements_across_fragments += shots_across_gradient
-        measurements_trend_bai.append(shots_across_gradient)
-
-        # Use sampled estimates for BAI decision
-        means = estimates
-        max_mean = max(abs(means[active_arms]))
-
-        # Calculate confidence intervals based on estimated variance
-        # radius = np.sqrt(estimated_variances / pulls) * np.sqrt(2 * np.log(len(active_arms) / delta))
+    # Calculate confidence intervals based on estimated variance
+    # radius = np.sqrt(estimated_variances / pulls) * np.sqrt(2 * np.log(len(active_arms) / delta))
 
 
-        # Eliminate arms based on confidence intervals
-        new_active_arms = []
-        for i in active_arms:
-            if abs(means[i]) + radius >= max_mean - radius:
-                new_active_arms.append(i)
+    print(f"After round {rounds}, active_arms: {active_arms}")
+    sampled_grads = [f"{estimates[i]:.6e}±{radius:.6e}" for i in active_arms]
 
-        active_arms = new_active_arms
+    # Clean up memory after each round
+    del sampled_grads
+    gc.collect()
 
-        print(f"After round {rounds}, active_arms: {active_arms}")
-        sampled_grads = [f"{estimates[i]:.6e}±{radius:.6e}" for i in active_arms]
-        print(f"Sampled gradients: {sampled_grads}")
-
-        # Clean up memory after each round
-        del sampled_grads
-        gc.collect()
-
-        if rounds % 2 == 0:  # Print memory every 2 rounds
-            print_memory_usage(f"after BAI round {rounds}")
+    if rounds % 2 == 0:  # Print memory every 2 rounds
+        print_memory_usage(f"after BAI round {rounds}")
 
     # Select best arm based on sampled estimates
     means = estimates
@@ -492,7 +464,7 @@ def fast_energy_calculation(H_sparse_matrix, current_state, new_operator, new_pa
 
 @track_memory_usage
 def incremental_energy_optimization(H_sparse_matrix, current_state, new_operator,
-                                  initial_guess=0.01, max_iter=50, tol=1e-6):
+                                  initial_guess=0.01, max_iter=20, tol=1e-6):
     """
     Fast single-parameter optimization using incremental updates.
 
@@ -557,6 +529,7 @@ def incremental_energy_optimization(H_sparse_matrix, current_state, new_operator
         if iteration % 3 == 0:  # Clean up every 3 iterations
             gc.collect()
 
+        # Get final state and energy
     optimal_energy, final_state = fast_energy_calculation(H_sparse_matrix, current_state, new_operator, param)
 
     # Aggressive cleanup
@@ -569,7 +542,7 @@ def incremental_energy_optimization(H_sparse_matrix, current_state, new_operator
 
 
 @track_memory_usage
-def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, shots=8192, max_iter=30, grad_tol=1e-2, verbose=True, mol='h4', save_intermediate=True, intermediate_filename='adapt_vqe_intermediate_results.csv', exact_energy=None):
+def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, shots=8192, max_iter=30, grad_tol=1e-3, verbose=True, mol='h4', save_intermediate=True, intermediate_filename='adapt_vqe_intermediate_results.csv', exact_energy=None):
     """
     ADAPT-VQE algorithm with multiprocessing support for gradient computation.
 
@@ -612,7 +585,7 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
         grads = []
 
         max_grad, best_idx, total_measurements_across_fragments, measurements_trend_bai, N_est = (
-            bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, iteration, n_qubits, shots_per_round=int(shots)))
+            find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, iteration, n_qubits, shots_per_round=int(shots)))
 
         total_measurements += total_measurements_across_fragments
         total_measurements_at_each_step.append(total_measurements)
@@ -689,7 +662,6 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
                 total_measurements_at_each_step=total_measurements_at_each_step,
                 total_measurements_trend_bai=total_measurements_trend_bai,
                 N_est=N_est,
-                best_idx=best_idx,
                 filename=intermediate_filename
             )
 
@@ -769,7 +741,7 @@ if __name__ == "__main__":
 
     # Intermediate saving configuration
     save_intermediate = True
-    intermediate_filename = f'adapt_vqe_intermediate_{mol}_{pool_type}_results_{time_string}.csv'
+    intermediate_filename = f'adapt_vqe_intermediate_{mol}_{pool_type}_results_{time_string}_exact.csv'
 
     energies, params, ansatz, final_state, total_measurements, total_measurements_at_each_step, total_measurements_trend_bai = adapt_vqe_qiskit(
         H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, generator_pool,
@@ -805,5 +777,5 @@ if __name__ == "__main__":
         ansatz_depth=ansatz_depth,
         total_measurements_at_each_step=total_measurements_at_each_step,
         total_measurements_trend_bai=total_measurements_trend_bai,
-        filename=f'adapt_vqe_qubitwise_bai_{mol}_{pool_type}_results.csv'
+        filename=f'adapt_vqe_qubitwise_bai_{mol}_{pool_type}_results_exact.csv'
     )

@@ -165,13 +165,17 @@ def compute_exact_commutator_gradient_with_statevector(current_statevector, H_qu
 
         # Calculate fragment statistics
         fragment_mean = np.mean(fragment_samples)
-
-        fragment_variance = fragment_exact_variance
+        if len(fragment_samples) > 1:
+            fragment_variance = np.var(fragment_samples, ddof=1)
+        else:
+            fragment_variance = 0
 
         fragment_expectations.append(fragment_mean)
         fragment_variances.append(fragment_variance)
         total_shots += shots_per_fragment
 
+        # Clean up
+        del fragment_samples
 
     # Vectorized N_est calculation
     N_est = [gradient_variance / epsilon**2 for epsilon in epsilons]
@@ -491,10 +495,10 @@ def fast_energy_calculation(H_sparse_matrix, current_state, new_operator, new_pa
     return energy, updated_state
 
 @track_memory_usage
-def incremental_energy_optimization(H_sparse_matrix, current_state, new_operator,
-                                  initial_guess=0.01, max_iter=50, tol=1e-6):
+def scipy_energy_optimization(H_sparse_matrix, current_state, new_operator,
+                            initial_guess=0.01, max_iter=50, tol=1e-6):
     """
-    Fast single-parameter optimization using incremental updates.
+    Energy optimization using scipy.minimize for robust parameter optimization.
 
     Args:
         H_sparse_matrix: Sparse Hamiltonian matrix
@@ -511,61 +515,68 @@ def incremental_energy_optimization(H_sparse_matrix, current_state, new_operator
     """
 
     def energy_function(param):
-        energy, _ = fast_energy_calculation(H_sparse_matrix, current_state, new_operator, param)
+        energy, _ = fast_energy_calculation(H_sparse_matrix, current_state, new_operator, param[0])
         # Clean up after each energy calculation
         gc.collect()
         return energy
 
-    # Use simple gradient-free optimization for single parameter
-    # This is much faster than scipy.optimize for single parameter problems
-    param = initial_guess
-    step_size = 0.1
-    min_step = 1e-8
+    # Use scipy.minimize with L-BFGS-B method for single parameter optimization
+    from scipy.optimize import minimize
 
-    for iteration in range(max_iter):
-        # Calculate energy at current point
-        current_energy = energy_function(param)
+    # Try different optimization methods for robustness
+    methods_to_try = ['L-BFGS-B']
+    best_result = None
+    best_energy = float('inf')
 
-        # Calculate energy at param + step_size
-        energy_plus = energy_function(param + step_size)
+    for method in methods_to_try:
+        try:
+            result = minimize(
+                energy_function,
+                [initial_guess],
+                method=method,
+                options={
+                    'maxiter': max_iter,
+                    'disp': False,
+                    'gtol': tol,
+                    'ftol': tol
+                },
+                bounds=[(-np.pi, np.pi)] if method == 'L-BFGS-B' else None
+            )
 
-        # Calculate energy at param - step_size
-        energy_minus = energy_function(param - step_size)
+            if result.success and result.fun < best_energy:
+                best_result = result
+                best_energy = result.fun
 
-        # Estimate gradient
-        gradient = (energy_plus - energy_minus) / (2 * step_size)
+        except Exception as e:
+            print(f"    Method {method} failed: {e}")
+            continue
 
-        # Update parameter
-        new_param = param - step_size * gradient
+    # If all methods failed, use the last result or fallback
+    if best_result is None:
+        print("    All optimization methods failed, using fallback")
+        # Fallback to simple grid search
+        param_range = np.linspace(-np.pi, np.pi, 100)
+        energies = []
+        for param in param_range:
+            energy = energy_function([param])
+            energies.append(energy)
 
-        # Calculate new energy
-        new_energy = energy_function(new_param)
+        best_idx = np.argmin(energies)
+        optimal_param = param_range[best_idx]
+        optimal_energy = energies[best_idx]
+    else:
+        optimal_param = best_result.x[0]
+        optimal_energy = best_result.fun
 
-        # Check convergence
-        if abs(new_energy - current_energy) < tol:
-            param = new_param
-            break
-
-        # Update parameter and step size
-        if new_energy < current_energy:
-            param = new_param
-            step_size = min(step_size * 1.1, 0.5)  # Increase step size
-        else:
-            step_size = max(step_size * 0.5, min_step)  # Decrease step size
-
-        # Clean up after each iteration
-        if iteration % 3 == 0:  # Clean up every 3 iterations
-            gc.collect()
-
-    optimal_energy, final_state = fast_energy_calculation(H_sparse_matrix, current_state, new_operator, param)
+    # Calculate final state with optimal parameter
+    optimal_energy, final_state = fast_energy_calculation(H_sparse_matrix, current_state, new_operator, optimal_param)
 
     # Aggressive cleanup
-    del energy_function, step_size, min_step
-    del current_energy, energy_plus, energy_minus, gradient, new_param, new_energy
+    del energy_function, best_result, best_energy
     gc.collect()
-    print_memory_usage("after incremental_energy_optimization cleanup")
+    print_memory_usage("after scipy_energy_optimization cleanup")
 
-    return param, optimal_energy, final_state
+    return optimal_param, optimal_energy, final_state
 
 
 @track_memory_usage
@@ -630,8 +641,8 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
         ansatz_ops.append(qubit_operator_to_qiskit_operator(generator_pool[best_idx], n_qubits))
         params.append(0.0)
 
-        # Replace the expensive optimization section with fast incremental optimization
-        print(f"  Starting fast incremental optimization...")
+        # Replace the expensive optimization section with scipy.minimize optimization
+        print(f"  Starting scipy.minimize optimization...")
 
         # Keep Hamiltonian sparse for memory efficiency
         H_sparse_matrix = H_sparse_pauli_op.to_matrix(sparse=True)
@@ -639,10 +650,10 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
         # Get current state as numpy array for faster operations
         current_state = final_statevector.data
 
-        # Use fast incremental optimization
-        optimal_param, optimal_energy, updated_state = incremental_energy_optimization(
+        # Use scipy.minimize optimization
+        optimal_param, optimal_energy, updated_state = scipy_energy_optimization(
             H_sparse_matrix, current_state, ansatz_ops[-1],
-            initial_guess=0.01, max_iter=15, tol=1e-6
+            initial_guess=0.01, max_iter=30, tol=1e-6
         )
 
         # Update parameter and energy
@@ -654,7 +665,7 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
         energies.append(energy)
 
         if verbose:
-            print(f"  Fast optimization completed in ~15 iterations")
+            print(f"  Scipy.minimize optimization completed")
             print(f"  Energy after iteration {iteration}: {energy:.8f}")
             print(f"  Optimal parameter: {optimal_param:.6f}")
 
@@ -689,7 +700,6 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
                 total_measurements_at_each_step=total_measurements_at_each_step,
                 total_measurements_trend_bai=total_measurements_trend_bai,
                 N_est=N_est,
-                best_idx=best_idx,
                 filename=intermediate_filename
             )
 
