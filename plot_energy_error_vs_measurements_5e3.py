@@ -57,6 +57,8 @@ def plot_energy_error_vs_measurements(csv_filename, csv_filename_exact):
     cumulative_measurements_001 = np.cumsum(
         estimated_measurements_array[:, 0])  # 0.001 accuracy
 
+    print(f"Cumulative measurements [0.001, 0.01, 0.1]: {cumulative_measurements_001}")
+
     # Create the plot
     plt.figure(figsize=(12, 8))
 
@@ -64,38 +66,26 @@ def plot_energy_error_vs_measurements(csv_filename, csv_filename_exact):
     plt.loglog(cumulative_measurements_001, energy_errors_exact, 'ro-', linewidth=2,
                markersize=8, label='0.001 accuracy estimates')
 
-
-    # Add some data points annotations
-    for i in range(0, len(energy_errors_exact), 2):  # Annotate every other point
-        plt.annotate(f'{i}',
-                     (cumulative_measurements_001[i], energy_errors_exact[i]),
-                     xytext=(5, 5), textcoords='offset points', fontsize=8)
-
     # Plot energy error vs total measurements
     plt.loglog(total_measurements, energy_errors, 'bo-', linewidth=2,
                markersize=8, label='BAI method')
 
     # Add chemical accuracy line and shaded region
-    chemical_accuracy = 0.0016  # Ha
+    chemical_accuracy = 0.00159  # Ha
     plt.axhline(y=chemical_accuracy, color='red', linestyle='--', linewidth=2,
                 label='Chemical Accuracy')
     plt.axhspan(0, chemical_accuracy, alpha=0.3, color='lightblue',
                 label='Chemical Accuracy Region')
 
     # Customize the plot
-    plt.xlabel('Total Measurements', fontsize=14)
-    plt.ylabel('Energy Error (Ha)', fontsize=14)
+    plt.xlabel('Total Measurements', fontsize=30)
+    plt.ylabel('Energy Error (Hartree)', fontsize=30)
     plt.title(
-        'Energy Error vs Total Measurements',
-        fontsize=16)
-    plt.legend(fontsize=12)
+        r'BeH$_2$ (Qubit pool)',
+        fontsize=40)
     plt.grid(True, alpha=0.3)
-
-    # Add iteration number annotations
-    for i in range(0, len(energy_errors), 2):  # Annotate every other point
-        plt.annotate(f'{i}',
-                     (total_measurements[i], energy_errors[i]),
-                     xytext=(5, 5), textcoords='offset points', fontsize=8)
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
 
     plt.tight_layout()
     plt.show()
@@ -136,7 +126,7 @@ def parse_estimated_measurements(measurements_str):
 
 if __name__ == "__main__":
     # Plot the data from your CSV file
-    csv_filename = "adapt_vqe_intermediate_lih_uccsd_results_2025-08-0602-23.csv"
-    csv_filename_exact = "adapt_vqe_intermediate_lih_uccsd_results_2025-08-0514-14_exact.csv"
+    csv_filename = "adapt_vqe_intermediate_beh2_qubit_pool_results_2025-08-1415-01_0.001_8.csv"
+    csv_filename_exact = "adapt_vqe_intermediate_beh2_qubit_pool_results_2025-08-1414-33_exact_estimates.csv"
 
     plot_energy_error_vs_measurements(csv_filename, csv_filename_exact)

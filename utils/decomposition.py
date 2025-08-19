@@ -1,6 +1,6 @@
 import numpy as np
 from entities.paulis import PauliString
-from openfermion import QubitOperator, FermionOperator, bravyi_kitaev
+from openfermion import QubitOperator, FermionOperator, jordan_wigner
 
 
 def qwc_decomposition(Hqub):
@@ -88,7 +88,7 @@ def abs_of_dict_value(x):
 
 
 def ferm_to_qubit(H: FermionOperator):
-    Hqub = bravyi_kitaev(H)
+    Hqub = jordan_wigner(H)
     Hqub -= Hqub.constant
     Hqub.compress()
     Hqub.terms = dict(

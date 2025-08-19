@@ -8,7 +8,6 @@ echo "Submitting ADAPT-VQE parameter sweep jobs..."
 # Define the base parameters (same as in submit_individual_jobs.sh)
 declare -a BASE_PARAMS=(
     "lih_fer.bin lih 12 4 uccsd 1024"
-    "beh2_fer.bin beh2 14 4 uccsd 8192"
 )
 
 # Define the x parameter range (0.001 to 0.01 with 0.001 steps)
@@ -24,14 +23,14 @@ job_counter=0
 for base_param in "${BASE_PARAMS[@]}"; do
     # Parse base parameters
     read -r mol_file mol n_qubits n_electrons pool_type shots <<< "$base_param"
-    
+
     echo "Processing base parameters: $mol with $pool_type pool"
-    
+
     # Submit jobs for each x, y combination
     for x_val in "${X_VALUES[@]}"; do
         for y_val in "${Y_VALUES[@]}"; do
             job_counter=$((job_counter + 1))
-            
+
             echo "Submitting job $job_counter: $mol with x=$x_val, y=$y_val"
 
             # Create temporary individual job script
@@ -150,4 +149,4 @@ echo "  scancel -u \$USER"
 echo ""
 echo "To monitor specific parameter combinations:"
 echo "  squeue -u \$USER | grep 'adapt_lih_x0.005_y5'"
-echo "  squeue -u \$USER | grep 'adapt_beh2_x0.003_y3'" 
+echo "  squeue -u \$USER | grep 'adapt_beh2_x0.003_y3'"

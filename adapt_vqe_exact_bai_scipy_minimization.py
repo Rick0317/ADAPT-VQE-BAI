@@ -111,7 +111,7 @@ def _compute_single_gradient_bai(args):
         return arm_index, 0.0
 
 
-def compute_exact_commutator_gradient_with_statevector(current_statevector, H_qubit_op, generator_op, fragment_indices, n_qubits, radius):
+def compute_exact_commutator_gradient_with_statevector(current_statevector, H_qubit_op, generator_op, n_qubits, radius):
     """
     Ultra-fast computation of energy gradient using sparse matrix operations and optimized Pauli calculations
     Uses statevector directly instead of circuit.
@@ -214,27 +214,27 @@ def compute_pauli_expectation_fast(state_vector, pauli_string, n_qubits):
 
 
 
-def compute_exact_commutator_gradient(current_circuit, H_qubit_op, generator_op, fragment_indices, n_qubits, radius):
+def compute_exact_commutator_gradient(current_circuit, H_qubit_op, generator_op, n_qubits, radius):
     """
     Wrapper function that uses the fast implementation
     """
     # Get statevector from circuit
     current_statevector = get_statevector(current_circuit)
-    return compute_exact_commutator_gradient_with_statevector(current_statevector, H_qubit_op, generator_op, fragment_indices, n_qubits, radius)
+    return compute_exact_commutator_gradient_with_statevector(current_statevector, H_qubit_op, generator_op, n_qubits, radius)
 
 
 def _compute_single_exact_gradient_bai_with_statevector(args):
     """Worker function for parallel exact gradient computation in BAI using statevector directly"""
     try:
-        arm_index, current_statevector, H_qubit_op, generator_op, fragment_indices, n_qubits, radius = args
+        arm_index, current_statevector, H_qubit_op, generator_op, n_qubits, radius = args
 
         # Compute exact gradient for this arm using statevector directly
         estimate_gradient, estimate_variance, N_est, total_shots = compute_exact_commutator_gradient_with_statevector(
-            current_statevector, H_qubit_op, generator_op, fragment_indices, n_qubits, radius=radius
+            current_statevector, H_qubit_op, generator_op, n_qubits, radius=radius
         )
 
         # Clean up and return
-        del current_statevector, H_qubit_op, generator_op, fragment_indices
+        del current_statevector, H_qubit_op, generator_op
         gc.collect()
         return arm_index, estimate_gradient, estimate_variance, N_est, total_shots
 
@@ -245,7 +245,7 @@ def _compute_single_exact_gradient_bai_with_statevector(args):
 
 
 @track_memory_usage
-def bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, iteration, n_qubits, delta=0.05, max_rounds=10, shots_per_round=4096):
+def bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op, generator_pool, x, y, iteration, n_qubits, delta=0.05, max_rounds=10, shots_per_round=4096):
     """
     BAI algorithm using exact gradients as means and sampling from normal distributions.
     Computes exact gradients once, then samples from normal distributions for BAI rounds.
@@ -280,11 +280,11 @@ def bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op
     while len(active_arms) > 1 and rounds < max_rounds:
         rounds += 1
         print(f"Round {rounds}")
-        radius = 0.002 - 0.0001 * rounds
+        accuracy = x - (x - 0.001) * rounds / 10
 
         args_list = [
             (i, current_statevector, H_qubit_op, generator_pool[i],
-             commutator_indices_map[i], n_qubits, radius)
+             n_qubits, accuracy)
             for i in active_arms
         ]
 
@@ -317,8 +317,8 @@ def bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op
             for i in active_arms:
                 exact_grad, variance, N_est, total_shots = compute_exact_commutator_gradient_with_statevector(
                     current_statevector, H_qubit_op, generator_pool[i],
-                    commutator_indices_map[i], n_qubits,
-                    radius
+                    n_qubits,
+                    accuracy
                 )
                 estimated_gradients[i] = exact_grad
                 estimated_variances[i] = variance
@@ -351,6 +351,7 @@ def bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op
 
         # Calculate confidence intervals based on estimated variance
         # radius = np.sqrt(estimated_variances / pulls) * np.sqrt(2 * np.log(len(active_arms) / delta))
+        radius = accuracy * y
 
 
         # Eliminate arms based on confidence intervals
@@ -532,13 +533,11 @@ def scipy_energy_optimization(H_sparse_matrix, current_state, new_operator,
         try:
             result = minimize(
                 energy_function,
-                [initial_guess],
+                [0.01],
                 method=method,
                 options={
-                    'maxiter': max_iter,
                     'disp': False,
                     'gtol': tol,
-                    'ftol': tol
                 },
                 bounds=[(-np.pi, np.pi)] if method == 'L-BFGS-B' else None
             )
@@ -580,7 +579,7 @@ def scipy_energy_optimization(H_sparse_matrix, current_state, new_operator,
 
 
 @track_memory_usage
-def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, shots=8192, max_iter=30, grad_tol=1e-2, verbose=True, mol='h4', save_intermediate=True, intermediate_filename='adapt_vqe_intermediate_results.csv', exact_energy=None):
+def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, generator_pool, x, y, shots=8192, max_iter=30, grad_tol=1e-2, verbose=True, mol='h4', save_intermediate=True, intermediate_filename='adapt_vqe_intermediate_results.csv', exact_energy=None):
     """
     ADAPT-VQE algorithm with multiprocessing support for gradient computation.
 
@@ -623,7 +622,7 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
         grads = []
 
         max_grad, best_idx, total_measurements_across_fragments, measurements_trend_bai, N_est = (
-            bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op, generator_pool, fragment_group_indices_map, commutator_indices_map, iteration, n_qubits, shots_per_round=int(shots)))
+            bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op, generator_pool, x, y, iteration, n_qubits, shots_per_round=int(shots)))
 
         total_measurements += total_measurements_across_fragments
         total_measurements_at_each_step.append(total_measurements)
@@ -700,6 +699,7 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
                 total_measurements_at_each_step=total_measurements_at_each_step,
                 total_measurements_trend_bai=total_measurements_trend_bai,
                 N_est=N_est,
+                best_idx=best_idx,
                 filename=intermediate_filename
             )
 
@@ -733,6 +733,8 @@ if __name__ == "__main__":
     n_electrons = int(sys.argv[4])
     pool_type = sys.argv[5]
     shots = sys.argv[6]
+    x = float(sys.argv[7])
+    y = int(sys.argv[8])
 
     now = datetime.now()
 
@@ -756,19 +758,13 @@ if __name__ == "__main__":
     print(f"Generator pool size: {len(generator_pool)}")
 
     # Generate cache filename for commutator maps
-    cache_filename = generate_commutator_cache_filename(mol, n_qubits, n_electrons, len(generator_pool), pool_type)
-
-    # Get commutator maps with caching
-    fragment_group_indices_map, commutator_indices_map = get_commutator_maps_cached(
-        H_qubit_op, generator_pool, n_qubits,
-        molecule_name=mol, n_electrons=n_electrons, cache_file=cache_filename)
-
-    # print(f"Fragment Group Indices map: {fragment_group_indices_map}")
+    # cache_filename = generate_commutator_cache_filename(mol, n_qubits, n_electrons, len(generator_pool), pool_type)
     #
-    # exit()
+    # # Get commutator maps with caching
+    # fragment_group_indices_map, commutator_indices_map = get_commutator_maps_cached(
+    #     H_qubit_op, generator_pool, n_qubits,
+    #     molecule_name=mol, n_electrons=n_electrons, cache_file=cache_filename)
 
-    print(f"QWC groups found: {len(fragment_group_indices_map)}")
-    print(f"Commutator mappings for {len(commutator_indices_map)} operators")
 
 
     # Configuration parameters
@@ -783,7 +779,7 @@ if __name__ == "__main__":
 
     energies, params, ansatz, final_state, total_measurements, total_measurements_at_each_step, total_measurements_trend_bai = adapt_vqe_qiskit(
         H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, generator_pool,
-        fragment_group_indices_map, commutator_indices_map, mol=mol, exact_energy=exact_energy,
+        x, y, mol=mol, exact_energy=exact_energy,
         save_intermediate=save_intermediate, intermediate_filename=intermediate_filename)
 
     # Calculate results

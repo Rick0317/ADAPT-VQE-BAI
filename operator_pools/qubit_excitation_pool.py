@@ -47,42 +47,30 @@ def generate_single_excitation_generators(n_qubits, n_electrons, q_ops,
     occupied = list(range(n_electrons))
     virtual = list(range(n_electrons, n_qubits))
 
-    for p in range(0, n_qubits):
+    for a in virtual:  # virtual orbital (unoccupied)
+        for i in occupied:  # occupied orbital
+            # Check spin symmetry: only allow same-spin excitations or spin-flips
+            a_spin = a % 2  # 0 for even (alpha), 1 for odd (beta)
+            i_spin = i % 2  # 0 for even (alpha), 1 for odd (beta)
 
-        for q in range(p + 1, n_qubits):
+            # Allow same-spin excitations and spin-flip excitations
+            if True:  # For now, allow all excitations - can be restricted later
+                # T_ai = Q_a^dagger * Q_i - Q_i^dagger * Q_a
+                term1 = q_dag_ops[a] * q_ops[
+                    i]  # Create in virtual, annihilate in occupied
+                term2 = q_dag_ops[i] * q_ops[a]  # Hermitian conjugate
+                generator = term1 - term2
 
-            if (p + q) % 2 == 0:
-                f_operator = FermionOperator(((p, 1), (q, 0)))
-                f_operator -= hermitian_conjugated(f_operator)
-                f_operator = normal_ordered(f_operator)
-
-                q_operator = remove_z_string(f_operator)
-                single_generators.append(q_operator)
-
-    # for a in virtual:  # virtual orbital (unoccupied)
-    #     for i in occupied:  # occupied orbital
-    #         # Check spin symmetry: only allow same-spin excitations or spin-flips
-    #         a_spin = a % 2  # 0 for even (alpha), 1 for odd (beta)
-    #         i_spin = i % 2  # 0 for even (alpha), 1 for odd (beta)
-    #
-    #         # Allow same-spin excitations and spin-flip excitations
-    #         if True:  # For now, allow all excitations - can be restricted later
-    #             # T_ai = Q_a^dagger * Q_i - Q_i^dagger * Q_a
-    #             term1 = q_dag_ops[a] * q_ops[
-    #                 i]  # Create in virtual, annihilate in occupied
-    #             term2 = q_dag_ops[i] * q_ops[a]  # Hermitian conjugate
-    #             generator = term1 - term2
-    #
-    #             # Only keep non-zero generators
-    #             if generator.terms:  # Check if dictionary is non-empty
-    #                 spin_type = "same-spin" if a_spin == i_spin else "spin-flip"
-    #                 single_generators.append({
-    #                     'operator': generator,
-    #                     'type': 'single_excitation',
-    #                     'indices': (a, i),  # (virtual, occupied)
-    #                     'spin_type': spin_type,
-    #                     'description': f'T_{a}{i}: Q_{a}^dag * Q_{i} - Q_{i}^dag * Q_{a} ({spin_type})'
-    #                 })
+                # Only keep non-zero generators
+                if generator.terms:  # Check if dictionary is non-empty
+                    spin_type = "same-spin" if a_spin == i_spin else "spin-flip"
+                    single_generators.append({
+                        'operator': generator,
+                        'type': 'single_excitation',
+                        'indices': (a, i),  # (virtual, occupied)
+                        'spin_type': spin_type,
+                        'description': f'T_{a}{i}: Q_{a}^dag * Q_{i} - Q_{i}^dag * Q_{a} ({spin_type})'
+                    })
 
     return single_generators
 
@@ -288,8 +276,8 @@ if __name__ == "__main__":
     print("Testing correct qubit excitation pool generation...")
 
     # Test with small system (H2: 4 qubits, 2 electrons)
-    n_qubits = 4
-    n_electrons = 2
+    n_qubits = 8
+    n_electrons = 4
     print(f"\n{'=' * 60}")
     print(f"Testing with {n_qubits} qubits, {n_electrons} electrons (like H2)")
 
@@ -300,8 +288,9 @@ if __name__ == "__main__":
         include_doubles=True,
         max_doubles=20
     )
+    print(f"Pool size: {len(pool)}")
 
-    analyze_correct_qubit_pool(pool)
+    # analyze_correct_qubit_pool(pool)
 
     # Test with larger system, singles only (6 qubits, 4 electrons)
     print(f"\n{'=' * 60}")

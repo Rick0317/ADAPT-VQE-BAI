@@ -15,7 +15,7 @@ import csv
 from datetime import datetime
 
 # --- OpenFermion imports for chemistry mapping ---
-from openfermion import FermionOperator, bravyi_kitaev, get_sparse_operator
+from openfermion import FermionOperator, jordan_wigner, get_sparse_operator
 
 # Add path to import from parent directories
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -214,7 +214,7 @@ def openfermion_qubitop_to_sparsepauliop(q_op, n_qubits):
 
 
 def fermion_operator_to_qiskit_operator(ferm_op, n_qubits):
-    """Convert a FermionOperator to a Qiskit Operator via bravyi_kitaev mapping"""
+    """Convert a FermionOperator to a Qiskit Operator via Jordan-Wigner mapping"""
     qubit_op = ferm_to_qubit(ferm_op)
     sparse_matrix = get_sparse_operator(qubit_op, n_qubits)
     return Operator(sparse_matrix.toarray())
@@ -288,7 +288,16 @@ def create_ansatz_circuit(n_qubits, n_electrons, operators, parameters, mol='h4'
         # Apply exp(i * theta * op) to the circuit
         # Compute matrix exponential: exp(i * theta * G)
         # Note: operators are anti-Hermitian generators, so i*operator is Hermitian
-        unitary_matrix = expm(theta * op.data)
+        # Handle Qiskit Operator objects
+        if hasattr(op, 'data'):
+            # Qiskit Operator object
+            unitary_matrix = expm(theta * op.data)
+        else:
+            # OpenFermion operator - convert to matrix first
+            from openfermion import get_sparse_operator
+            sparse_matrix = get_sparse_operator(op, n_qubits)
+            unitary_matrix = expm(theta * sparse_matrix.toarray())
+
         unitary_gate = Operator(unitary_matrix)
         circuit.append(unitary_gate, range(n_qubits))
     return circuit
@@ -307,14 +316,34 @@ def apply_operator_to_statevector(statevector, operator, theta):
     # Compute matrix exponential: exp(i * theta * G)
     # Note: operator is anti-Hermitian generator, so i*operator is Hermitian
     # This matches the physics: exp(iθG) where G is anti-Hermitian
-    unitary_matrix = expm(theta * operator.data)
-    # Apply unitary to statevector
-    new_statevector = unitary_matrix @ statevector.data
-    return Statevector(new_statevector)
+
+    try:
+        # Handle Qiskit Operator objects
+        if hasattr(operator, 'data'):
+            # Qiskit Operator object
+            operator_matrix = operator.data
+        else:
+            # OpenFermion operator - convert to matrix first
+            from openfermion import get_sparse_operator
+            sparse_matrix = get_sparse_operator(operator, len(statevector.data))
+            operator_matrix = sparse_matrix.toarray()
+
+        # Compute matrix exponential efficiently (operators are already anti-Hermitian)
+        unitary_matrix = expm(theta * operator_matrix)
+
+        # Apply unitary to statevector
+        new_statevector_data = unitary_matrix @ statevector.data
+        return Statevector(new_statevector_data)
+
+    except Exception as e:
+        print(f"Error in apply_operator_to_statevector: {e}")
+        # Return original statevector if there's an error
+        return statevector
 
 
 def create_ansatz_statevector(n_qubits, n_electrons, operators, parameters, mol='h4'):
     """Create parameterized ansatz statevector directly without circuit construction"""
+    print(f"Mol: {mol}")
     # Start with HF statevector
     statevector = get_hf_statevector(n_qubits, n_electrons, mol=mol)
 

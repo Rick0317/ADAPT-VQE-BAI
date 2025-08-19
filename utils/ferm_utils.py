@@ -1,4 +1,4 @@
-from openfermion import FermionOperator, normal_ordered, bravyi_kitaev
+from openfermion import FermionOperator, normal_ordered, jordan_wigner
 import numpy as np
 
 
@@ -91,11 +91,12 @@ def abs_of_dict_value(x):
 
 def ferm_to_qubit(H: FermionOperator):
     """
-    Converts a FermionOperator to a qubit with Bravyi Kitaev
+    Converts a FermionOperator to a qubit with Jordan-Wigner mapping
     :param H:
     :return:
     """
-    Hqub = bravyi_kitaev(H)
+    Hqub = jordan_wigner(H)
+    print(f"Constant: {Hqub.constant}")
     Hqub -= Hqub.constant
     Hqub.compress()
     Hqub.terms = dict(

@@ -7,14 +7,17 @@ echo "Submitting individual ADAPT-VQE jobs..."
 
 # Define the same parameter combinations from execution.sh
 declare -a JOB_PARAMS=(
-    "lih_fer.bin lih 12 4 uccsd 2048"
-    "beh2_fer.bin beh2 14 4 uccsd 8192"
+    "lih_fer.bin lih 12 4 qubit_pool 1024 0.005 5"
+    "lih_fer.bin lih 12 4 qubit_excitation 1024 0.005 5"
+    "beh2_fer.bin beh2 14 4 uccsd 8192 0.005 5"
+    "beh2_fer.bin beh2 14 4 qubit_pool 8192 0.005 5"
+    "beh2_fer.bin beh2 14 4 qubit_excitation 8192 0.005 5"
 )
 
 # Submit each job individually
 for i in "${!JOB_PARAMS[@]}"; do
     # Parse parameters
-    read -r mol_file mol n_qubits n_electrons pool_type shots <<< "${JOB_PARAMS[$i]}"
+    read -r mol_file mol n_qubits n_electrons pool_type shots accuracy radius <<< "${JOB_PARAMS[$i]}"
 
     echo "Submitting job $((i+1))/6: $mol with $pool_type pool"
 
@@ -48,7 +51,7 @@ export MKL_NUM_THREADS=4
 echo "SLURM job started at \$(date)"
 echo "Job ID: \$SLURM_JOB_ID"
 echo "Node: \$SLURM_NODELIST"
-echo "Running $mol with parameters: $mol_file $n_qubits $n_electrons $pool_type $shots"
+echo "Running $mol with parameters: $mol_file $n_qubits $n_electrons $pool_type $shots $accuracy $radius"
 
 echo "Testing environment..."
 which python
@@ -70,7 +73,7 @@ echo "Starting ADAPT-VQE qubitwise optimization for $mol..."
 echo "Working directory: \$(pwd)"
 
 # Run the ADAPT-VQE script
-python -u adapt_vqe_exact_bai.py "$mol_file" "$mol" "$n_qubits" "$n_electrons" "$pool_type" "$shots" 2>&1 | tee -a "\$LOG_FILE"
+python -u adapt_vqe_exact_bai_scipy_minimization_multi_params.py "$mol_file" "$mol" "$n_qubits" "$n_electrons" "$pool_type" "$shots" "$accuracy" "$radius" 2>&1 | tee -a "\$LOG_FILE"
 
 # Check exit status
 if [ \$? -eq 0 ]; then
