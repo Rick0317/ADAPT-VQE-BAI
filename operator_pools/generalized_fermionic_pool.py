@@ -120,6 +120,56 @@ def get_tapered_fermion_uccsd_anti_hermitian(site: int, n_elec:int, tapered_site
 
     return operator_pool
 
+
+def get_generalized_fermionic_pool(site: int, spin_conserving: bool = True):
+    """
+    Generate a generalized fermionic pool that includes all possible one-body and two-body
+    excitation operators between any arbitrary orbitals (not restricted to occupied→virtual).
+
+    This generalizes UCCSD by including excitations that would immediately annihilate the HF state,
+    such as occupied→occupied, virtual→virtual, etc.
+
+    The cluster operators are generalized: τ̂ᵖᵍʳˢ where p, q, r, s refer to any arbitrary orbital.
+
+    :param site: Total number of spin orbitals
+    :param spin_conserving: If True, only include spin-conserving excitations (default: True)
+    :return: List of QubitOperators (Jordan-Wigner transformed)
+    """
+    operator_pool = []
+
+    # One-body excitations: all possible p→q where p ≠ q
+    for p in range(site):
+        for q in range(site):
+            if p == q:
+                continue
+            # Skip if spin is not conserved and we require spin conservation
+            if spin_conserving and (p % 2 != q % 2):
+                continue
+            operator_pool.append(jordan_wigner(get_anti_hermitian_one_body((p, q))))
+
+    # Two-body excitations: all possible (p,q)→(r,s)
+    # Use ordering constraints to avoid duplicate operators
+    for p in range(site):
+        for q in range(p, site):
+            for r in range(site):
+                for s in range(r + 1, site):
+                    # Skip trivial cases
+                    if (p == r and q == s):
+                        continue
+
+                    # Spin conservation: total spin before = total spin after
+                    if spin_conserving:
+                        # Check parity conservation
+                        if (p + q + r + s) % 2 != 0:
+                            continue
+                        # Check spin conservation: number of alpha/beta electrons conserved
+                        if p % 2 + q % 2 != r % 2 + s % 2:
+                            continue
+
+                    operator_pool.append(jordan_wigner(get_anti_hermitian_two_body((p, q, r, s))))
+
+    return operator_pool
+
 if __name__ == '__main__':
     pool = get_spin_considered_uccsd_anti_hermitian(4, 2)
     print(pool)

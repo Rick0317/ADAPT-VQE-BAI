@@ -1,4 +1,6 @@
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend to avoid PyCharm issues
 import matplotlib.pyplot as plt
 import numpy as np
 import ast

@@ -33,7 +33,7 @@ def sum_measurements_until_threshold(df):
 if __name__ == "__main__":
     # Load the CSV file.
     try:
-        df = pd.read_csv('beh2/adapt_vqe_qubit_excitation_results_2025-08-1814-53-54_exact_estimates.csv')
+        df = pd.read_csv('h4/adapt_vqe_qubit_excitation_results_2025-08-1814-53-54_exact_estimates.csv')
         sum_measurements_until_threshold(df)
     except FileNotFoundError:
         print("The specified CSV file was not found. Please check the file name and path.")

@@ -376,7 +376,7 @@ def bai_find_the_best_arm_exact_with_statevector(current_statevector, H_qubit_op
         for i in active_arms
     ]
 
-    num_processes = min(6, len(active_arms))
+    num_processes = min(cpu_count(), len(active_arms))
     shots_across_gradient = 0
 
     try:
@@ -516,7 +516,7 @@ def fast_energy_calculation(H_sparse_matrix, current_state, new_operator, new_pa
     return energy, updated_state
 
 @track_memory_usage
-def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, generator_pool, x, y, target_accuracy, shots=8192, max_iter=30, grad_tol=1e-4, verbose=True, mol='h4', save_intermediate=True, intermediate_filename='adapt_vqe_intermediate_results.csv', exact_energy=None):
+def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, generator_pool, x, y, target_accuracy, shots=8192, max_iter=100, grad_tol=1e-4, verbose=True, mol='h4', save_intermediate=True, intermediate_filename='adapt_vqe_intermediate_results.csv', exact_energy=None):
     """
     ADAPT-VQE algorithm with multiprocessing support for gradient computation.
 

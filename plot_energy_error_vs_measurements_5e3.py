@@ -1,4 +1,6 @@
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend to avoid PyCharm issues
 import matplotlib.pyplot as plt
 import numpy as np
 import ast
@@ -19,6 +21,8 @@ def parse_total_measurements(measurements_str):
 
 def plot_energy_error_vs_measurements(csv_filename, csv_filename_exact):
     """Plot energy_error vs total_measurements using last element from total_measurements_at_each_step"""
+
+    n_points = 15
 
     # Read the CSV file
     df = pd.read_csv(csv_filename)
@@ -56,6 +60,10 @@ def plot_energy_error_vs_measurements(csv_filename, csv_filename_exact):
     # Calculate cumulative measurements for each accuracy level
     cumulative_measurements_001 = np.cumsum(
         estimated_measurements_array[:, 0])  # 0.001 accuracy
+    energy_errors = energy_errors[:n_points]
+    total_measurements = total_measurements[:n_points]
+    energy_errors_exact = energy_errors_exact[:n_points]
+    cumulative_measurements_001 = cumulative_measurements_001[:n_points]
 
     print(f"Cumulative measurements [0.001, 0.01, 0.1]: {cumulative_measurements_001}")
 
@@ -63,7 +71,7 @@ def plot_energy_error_vs_measurements(csv_filename, csv_filename_exact):
     plt.figure(figsize=(12, 8))
 
     # Plot for each accuracy level
-    plt.loglog(cumulative_measurements_001, energy_errors_exact, 'ro-', linewidth=2,
+    plt.loglog(cumulative_measurements_001, energy_errors_exact, 'ro--', linewidth=2,
                markersize=8, label='0.001 accuracy estimates')
 
     # Plot energy error vs total measurements
@@ -72,22 +80,23 @@ def plot_energy_error_vs_measurements(csv_filename, csv_filename_exact):
 
     # Add chemical accuracy line and shaded region
     chemical_accuracy = 0.00159  # Ha
-    plt.axhline(y=chemical_accuracy, color='red', linestyle='--', linewidth=2,
+    plt.axhline(y=chemical_accuracy, color='black', linestyle='--', linewidth=2,
                 label='Chemical Accuracy')
     plt.axhspan(0, chemical_accuracy, alpha=0.3, color='lightblue',
                 label='Chemical Accuracy Region')
 
     # Customize the plot
-    plt.xlabel('Total Measurements', fontsize=30)
-    plt.ylabel('Energy Error (Hartree)', fontsize=30)
+    plt.xlabel('Number of Measurements', fontsize=40)
+    plt.ylabel('Energy Error (Hartree)', fontsize=40)
     plt.title(
-        r'BeH$_2$ (Qubit pool)',
-        fontsize=40)
+        r'LiH (Qubit)',
+        fontsize=44)
     plt.grid(True, alpha=0.3)
-    plt.xticks(fontsize=20)
-    plt.yticks(fontsize=20)
+    plt.xticks(fontsize=30)
+    plt.yticks(fontsize=30)
 
     plt.tight_layout()
+    plt.savefig('energy_error_vs_measurements_lih_qubit.png', dpi=300, bbox_inches='tight')
     plt.show()
 
     # Print some statistics
@@ -126,7 +135,7 @@ def parse_estimated_measurements(measurements_str):
 
 if __name__ == "__main__":
     # Plot the data from your CSV file
-    csv_filename = "adapt_vqe_intermediate_beh2_qubit_pool_results_2025-08-1415-01_0.001_8.csv"
-    csv_filename_exact = "adapt_vqe_intermediate_beh2_qubit_pool_results_2025-08-1414-33_exact_estimates.csv"
+    csv_filename = "lih/adapt_vqe_bai_qubit_pool_results_2025-09-0208-47-01_0.001_8.csv"
+    csv_filename_exact = "lih/adapt_vqe_qubit_pool_results_2025-09-0207-55-49_exact_estimates.csv"
 
     plot_energy_error_vs_measurements(csv_filename, csv_filename_exact)
