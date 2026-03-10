@@ -17,6 +17,7 @@ import os
 import sys
 import numpy as np
 from get_generator_pool import get_generator_pool
+from utils.cnot_counting import count_cnots_from_qubit_operator
 from datetime import datetime
 from scipy.sparse import csr_matrix, eye
 from scipy.sparse.linalg import expm_multiply
@@ -526,11 +527,13 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
 
     # Prepare reference state
     ansatz_ops = []
+    ansatz_qubit_ops = []  # Store original QubitOperators for CNOT counting
     params = []
     energies = []
     total_measurements = 0
     total_measurements_at_each_step = []
     total_measurements_trend_bai = {}
+    total_cnot_count = 0
 
     # Compute exact energy if not provided
     if exact_energy is None:
@@ -579,7 +582,13 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
             break
 
         # Add best operator to ansatz
+        ansatz_qubit_ops.append(generator_pool[best_idx])  # Store original for CNOT counting
         ansatz_ops.append(qubit_operator_sparse(generator_pool[best_idx], n_qubits))
+
+        # Count CNOTs for the newly added operator
+        new_op_cnots = count_cnots_from_qubit_operator(generator_pool[best_idx])
+        total_cnot_count += new_op_cnots
+        print(f"  CNOTs for new operator: {new_op_cnots}, Total CNOTs: {total_cnot_count}")
 
         print(f"Type of ansazing operators: {type(ansatz_ops[0])}")
 
@@ -672,6 +681,7 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
                 total_measurements_trend_bai=total_measurements_trend_bai,
                 N_est=N_est,
                 best_idx=best_idx,
+                total_cnot_count=total_cnot_count,
                 filename=intermediate_filename
             )
 
@@ -684,8 +694,9 @@ def adapt_vqe_qiskit(H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, gener
 
     if verbose:
         print(f"Total measurements used: {total_measurements}")
+        print(f"Total CNOT count: {total_cnot_count}")
 
-    return energies, params, ansatz_ops, final_state, total_measurements, total_measurements_at_each_step, total_measurements_trend_bai
+    return energies, params, ansatz_ops, final_state, total_measurements, total_measurements_at_each_step, total_measurements_trend_bai, total_cnot_count
 
 
 def check_statevector_quality(statevector, label=""):
@@ -773,7 +784,7 @@ if __name__ == "__main__":
     save_intermediate = True
     intermediate_filename = f'{mol}/adapt_vqe_{pool_type}_results_{time_string}_exact_estimates.csv'
 
-    energies, params, ansatz, final_state, total_measurements, total_measurements_at_each_step, total_measurements_trend_bai = adapt_vqe_qiskit(
+    energies, params, ansatz, final_state, total_measurements, total_measurements_at_each_step, total_measurements_trend_bai, total_cnot_count = adapt_vqe_qiskit(
         H_sparse_pauli_op, n_qubits, n_electrons, H_qubit_op, generator_pool,
         x, y, target_accuracy, mol=mol, exact_energy=exact_energy,
         save_intermediate=save_intermediate, intermediate_filename=intermediate_filename)
@@ -788,6 +799,7 @@ if __name__ == "__main__":
     print("Parameters:", params)
     print(f"Ansatz depth: {ansatz_depth}")
     print(f"Total measurements: {total_measurements}")
+    print(f"Total CNOT count: {total_cnot_count}")
     print(f"Fidelity (|<ADAPT-VQE|Exact>|^2): {overlap:.8f}")
 
     # Save results to CSV
@@ -807,5 +819,6 @@ if __name__ == "__main__":
         ansatz_depth=ansatz_depth,
         total_measurements_at_each_step=total_measurements_at_each_step,
         total_measurements_trend_bai=total_measurements_trend_bai,
+        total_cnot_count=total_cnot_count,
         filename=f'adapt_vqe_qubitwise_bai_{mol}_{pool_type}_results.csv'
     )

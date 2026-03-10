@@ -26,7 +26,7 @@ from utils.reference_state_utils import get_reference_state, get_occ_no
 def save_results_to_csv(final_energy, total_measurements, exact_energy, fidelity,
                        molecule_name, n_qubits, n_electrons, pool_size,
                        use_parallel, executor_type, max_workers,
-                       ansatz_depth,  total_measurements_at_each_step=[], total_measurements_trend_bai=[], energy_at_each_step=[], filename='adapt_vqe_results.csv'):
+                       ansatz_depth,  total_measurements_at_each_step=[], total_measurements_trend_bai=[], energy_at_each_step=[], total_cnot_count=0, filename='adapt_vqe_results.csv'):
     """
     Save ADAPT-VQE results to a CSV file.
 
@@ -70,7 +70,8 @@ def save_results_to_csv(final_energy, total_measurements, exact_energy, fidelity
         'max_workers': max_workers if use_parallel else 1,
         'energy_at_each_step': energy_at_each_step,
         'total_measurements_at_each_step': total_measurements_at_each_step,
-        'total_measurements_trend_bai':total_measurements_trend_bai
+        'total_measurements_trend_bai':total_measurements_trend_bai,
+        'total_cnot_count': total_cnot_count
     }
 
     # Write to CSV
@@ -91,7 +92,7 @@ def save_intermediate_results_to_csv(iteration, energy, params, ansatz_depth, to
                                    exact_energy, molecule_name, n_qubits, n_electrons, pool_size,
                                    use_parallel, executor_type, max_workers,
                                    total_measurements_at_each_step, total_measurements_trend_bai,N_est,
-                                   best_idx,
+                                   best_idx, total_cnot_count=0,
                                    filename='adapt_vqe_intermediate_results.csv'):
     """
     Save intermediate ADAPT-VQE results after each iteration to a CSV file.
@@ -142,6 +143,7 @@ def save_intermediate_results_to_csv(iteration, energy, params, ansatz_depth, to
         'total_measurements_trend_bai': str(total_measurements_trend_bai),
         'Estiamted measurements [0.001, 0.01, 0.1]': N_est,
         'best_idx': best_idx,
+        'total_cnot_count': total_cnot_count,
     }
 
     # Write to CSV
